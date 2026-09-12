@@ -9,8 +9,10 @@ are built on top of it (see CLAUDE.md deploy cadence).
 from fastapi import FastAPI
 
 from app.core.config import settings
+from app.routers import me
 
 app = FastAPI(title=settings.app_name)
+app.include_router(me.router)
 
 
 @app.get("/health")

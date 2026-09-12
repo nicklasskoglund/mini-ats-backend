@@ -220,3 +220,5 @@ __marimo__/
 # Claude
 .claude/
 CLAUDE.md
+kickoff-prompt.md
+cv-screening-SKILL.md

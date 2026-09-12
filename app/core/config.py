@@ -17,14 +17,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings, read from environment variables / .env.
 
-    More fields (SUPABASE_URL, SUPABASE_JWKS_URL, SUPABASE_SECRET_KEY, etc.)
-    are added in step 2 when JWT verification against Supabase is built.
+    SUPABASE_URL and SUPABASE_JWKS_URL have no defaults on purpose: JWT
+    verification is a security-critical dependency used on every protected
+    endpoint, so the app should fail loudly at startup if they're missing
+    rather than silently running with an unusable auth setup.
+
+    SUPABASE_SECRET_KEY is added in step 3+, once the admin account-creation
+    flow and RLS-bypassing DB writes need it.
     """
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "mini-ats-backend"
     environment: str = "development"
+
+    supabase_url: str
+    supabase_jwks_url: str
+    # Supabase issues tokens with aud="authenticated" by default.
+    supabase_jwt_audience: str = "authenticated"
+    # Supabase's asymmetric JWT signing keys use ES256; RS256 is accepted
+    # too since Supabase also supports RSA key pairs for this feature.
+    supabase_jwt_algorithms: list[str] = ["ES256", "RS256"]
 
 
 settings = Settings()
