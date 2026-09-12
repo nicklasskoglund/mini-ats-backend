@@ -6,9 +6,11 @@ See `kickoff-prompt.md` for the full spec.
 ## Status
 
 - Done: health check endpoint (deployed); JWT verification against
-  Supabase's JWKS endpoint, exposed via a protected `GET /me`
-- Next up: database schema, CRUD endpoints (jobs, candidates), kanban
-  filtering, admin account creation, AI CV assessment
+  Supabase's JWKS endpoint, exposed via a protected `GET /me`; profiles
+  table schema with RLS and auto-provisioning trigger, migrated to
+  production
+- Next up: CRUD endpoints (jobs, candidates), kanban filtering, admin
+  account creation, AI CV assessment
 
 ## Requirements
 
