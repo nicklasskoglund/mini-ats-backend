@@ -22,8 +22,10 @@ class Settings(BaseSettings):
     endpoint, so the app should fail loudly at startup if they're missing
     rather than silently running with an unusable auth setup.
 
-    SUPABASE_SECRET_KEY is added in step 3+, once the admin account-creation
-    flow and RLS-bypassing DB writes need it.
+    SUPABASE_SECRET_KEY has no default either: it's the service-role key
+    used for every database read/write (bypasses RLS, since FastAPI - not
+    Postgres - enforces ownership/authorization), so the app is unusable
+    without it and should fail at startup rather than at the first request.
     """
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -33,6 +35,7 @@ class Settings(BaseSettings):
 
     supabase_url: str
     supabase_jwks_url: str
+    supabase_secret_key: str
     # Supabase issues tokens with aud="authenticated" by default.
     supabase_jwt_audience: str = "authenticated"
     # Supabase's asymmetric JWT signing keys use ES256; RS256 is accepted

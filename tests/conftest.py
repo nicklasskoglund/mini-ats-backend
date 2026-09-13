@@ -21,6 +21,7 @@ os.environ.setdefault(
     "SUPABASE_JWKS_URL",
     "https://test.supabase.co/auth/v1/.well-known/jwks.json",
 )
+os.environ.setdefault("SUPABASE_SECRET_KEY", "test-secret-key")
 
 
 @pytest.fixture
