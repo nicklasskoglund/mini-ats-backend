@@ -7,7 +7,7 @@ frontend.
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 Role = Literal["admin", "customer"]
 
@@ -15,15 +15,21 @@ Role = Literal["admin", "customer"]
 class AdminAccountCreate(BaseModel):
     """Request body for POST /admin/accounts.
 
-    No password field: admins never set a password for someone else - the
-    invited user sets their own via Supabase's invite email. Whether
-    company_name is actually required (only when role="customer") is
-    checked in app/routers/admin.py rather than here, since it depends on
-    another field's value and the spec calls for a 400, not the 422
-    FastAPI would produce from a Pydantic validator.
+    The password flow differs by role (checked in app/routers/admin.py,
+    not here, since both checks depend on another field's value and the
+    spec calls for 400s, not the 422s a Pydantic validator would produce):
+
+    - role="admin": password is required (min 8 chars) - the admin sets it
+      directly via create_user(email_confirm=True), no email is sent.
+    - role="customer": password must be omitted - the customer sets their
+      own via Supabase's invite email (invite_user_by_email()). An admin
+      is never in a position to know or set a customer's password.
+
+    company_name is required when role="customer", same as before.
     """
 
     email: EmailStr
+    password: str | None = Field(default=None, min_length=8)
     role: Role
     full_name: str | None = None
     company_name: str | None = None
