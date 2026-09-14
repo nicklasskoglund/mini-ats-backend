@@ -8,12 +8,13 @@ there's nothing here equivalent to JobCreate's admin-only customer_id -
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
 Stage = Literal["new", "screening", "interview", "offer", "hired", "rejected"]
+STAGES: tuple[str, ...] = get_args(Stage)
 
 
 class CandidateCreate(BaseModel):
@@ -50,3 +51,19 @@ class CandidateRead(BaseModel):
     ai_score: int | None
     ai_summary: str | None
     created_at: datetime
+
+
+class KanbanBoard(BaseModel):
+    """Candidates grouped by stage, for a kanban board view.
+
+    All six stages are always present (as an empty list if there are no
+    candidates in that stage yet), so clients can render every column
+    without special-casing a missing key.
+    """
+
+    new: list[CandidateRead] = []
+    screening: list[CandidateRead] = []
+    interview: list[CandidateRead] = []
+    offer: list[CandidateRead] = []
+    hired: list[CandidateRead] = []
+    rejected: list[CandidateRead] = []

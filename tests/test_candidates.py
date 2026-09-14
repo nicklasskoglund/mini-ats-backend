@@ -128,3 +128,89 @@ def test_admin_lists_candidates_from_every_job(act_as):
 
     assert response.status_code == 200
     assert len(response.json()) == 1
+
+
+def test_name_filter_matches_case_insensitive_partial(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    client.post("/candidates", json={"job_id": job_id, "name": "Alice Andersson"})
+    client.post("/candidates", json={"job_id": job_id, "name": "Bob"})
+
+    response = client.get("/candidates", params={"name": "ali"})
+
+    assert response.status_code == 200
+    assert [c["name"] for c in response.json()] == ["Alice Andersson"]
+
+
+def test_kanban_groups_candidates_by_stage(act_as):
+    """The kanban board always has all six stage keys, and candidates land
+    in the right one."""
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    alice_id = client.post(
+        "/candidates", json={"job_id": job_id, "name": "Alice"}
+    ).json()["id"]
+    client.post("/candidates", json={"job_id": job_id, "name": "Bob"})
+    client.patch(f"/candidates/{alice_id}", json={"stage": "interview"})
+
+    response = client.get("/candidates/kanban")
+
+    assert response.status_code == 200
+    board = response.json()
+    assert set(board.keys()) == {
+        "new",
+        "screening",
+        "interview",
+        "offer",
+        "hired",
+        "rejected",
+    }
+    assert [c["name"] for c in board["interview"]] == ["Alice"]
+    assert [c["name"] for c in board["new"]] == ["Bob"]
+    assert board["screening"] == []
+
+
+def test_kanban_unowned_job_id_returns_403_not_empty_board(act_as):
+    """An unowned job_id is a hard error, never a silently empty board."""
+    job_id = _create_job(act_as, CUSTOMER_ID)
+
+    act_as(id=OTHER_CUSTOMER_ID, role="customer")
+    response = client.get("/candidates/kanban", params={"job_id": job_id})
+
+    assert response.status_code == 403
+
+
+def test_kanban_missing_job_id_returns_404(act_as):
+    act_as(id=CUSTOMER_ID, role="customer")
+    response = client.get(
+        "/candidates/kanban",
+        params={"job_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert response.status_code == 404
+
+
+def test_kanban_admin_sees_candidates_from_every_job(act_as):
+    job1 = _create_job(act_as, CUSTOMER_ID)
+    client.post("/candidates", json={"job_id": job1, "name": "Alice"})
+
+    job2 = _create_job(act_as, OTHER_CUSTOMER_ID)
+    client.post("/candidates", json={"job_id": job2, "name": "Bob"})
+
+    act_as(id=ADMIN_ID, role="admin")
+    response = client.get("/candidates/kanban")
+
+    assert response.status_code == 200
+    board = response.json()
+    assert {c["name"] for c in board["new"]} == {"Alice", "Bob"}
+
+
+def test_kanban_combines_job_id_and_name_filter(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    client.post("/candidates", json={"job_id": job_id, "name": "Alice"})
+    client.post("/candidates", json={"job_id": job_id, "name": "Bob"})
+
+    response = client.get(
+        "/candidates/kanban", params={"job_id": job_id, "name": "ali"}
+    )
+
+    assert response.status_code == 200
+    board = response.json()
+    assert [c["name"] for c in board["new"]] == ["Alice"]

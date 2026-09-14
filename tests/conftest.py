@@ -7,11 +7,12 @@ test suite doesn't depend on a local .env file being present. Also provides
 fixtures for signing fake Supabase-style JWTs and for making the auth
 dependency trust our test key pair instead of calling Supabase's real JWKS
 endpoint over the network, plus a fake in-memory Supabase client (see
-FakeSupabase below) used by the jobs/candidates CRUD tests instead of a
-real database.
+FakeSupabase below) used by the jobs/candidates/admin CRUD tests instead of
+a real database.
 """
 
 import os
+import re
 import uuid
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from postgrest.exceptions import APIError
+from supabase_auth.errors import AuthApiError
 
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault(
@@ -62,18 +64,37 @@ def mock_jwks(monkeypatch, ec_keypair):
     monkeypatch.setattr(auth_jwt, "get_jwks_client", _fake_get_jwks_client)
 
 
-# --- jobs/candidates CRUD test support -------------------------------------
+# --- jobs/candidates/admin test support ------------------------------------
 #
 # These tests never touch a real database. FakeSupabase implements just the
-# slice of the postgrest query-builder chain app/routers/jobs.py and
-# app/routers/candidates.py actually call (select/insert/update, eq/in_/
-# maybe_single/execute) against plain in-memory lists. It's swapped in via
-# app.dependency_overrides on get_supabase, the same mechanism FastAPI's own
-# docs recommend for replacing a dependency in tests.
+# slice of the postgrest query-builder chain (select/insert/update, eq/in_/
+# ilike/maybe_single/execute) and the two supabase.auth.admin methods
+# (invite_user_by_email/list_users) that app/routers/*.py actually call,
+# against plain in-memory lists. It's swapped in via app.dependency_overrides
+# on get_supabase, the same mechanism FastAPI's own docs recommend for
+# replacing a dependency in tests.
 
 CUSTOMER_ID = "00000000-0000-0000-0000-0000000000c1"
 OTHER_CUSTOMER_ID = "00000000-0000-0000-0000-0000000000c2"
 ADMIN_ID = "00000000-0000-0000-0000-00000000ad01"
+
+
+def _ilike_pattern_to_regex(pattern: str) -> re.Pattern:
+    """Translate a Postgres ILIKE pattern (%/_ wildcards) into a compiled,
+    case-insensitive regex - just enough to mimic .ilike("name", "%x%") for
+    the tests, not a general SQL LIKE implementation.
+
+    Built character by character (% -> ".*", _ -> ".", anything else
+    escaped literally) rather than escaping the whole pattern up front and
+    substituting wildcards afterwards - re.escape leaves plain % and _
+    untouched (neither is a special regex character), so a substitute-after
+    approach would never find them.
+    """
+    regex_parts = [
+        ".*" if char == "%" else "." if char == "_" else re.escape(char)
+        for char in pattern
+    ]
+    return re.compile("^" + "".join(regex_parts) + "$", re.IGNORECASE)
 
 
 class _FakeResponse:
@@ -110,6 +131,10 @@ class _FakeQuery:
         self._filters.append(("in", field, list(values)))
         return self
 
+    def ilike(self, field, pattern):
+        self._filters.append(("ilike", field, _ilike_pattern_to_regex(pattern)))
+        return self
+
     def maybe_single(self):
         self._single = True
         return self
@@ -119,6 +144,8 @@ class _FakeQuery:
             if kind == "eq" and row.get(field) != value:
                 return False
             if kind == "in" and row.get(field) not in value:
+                return False
+            if kind == "ilike" and not value.match(str(row.get(field, ""))):
                 return False
         return True
 
@@ -135,21 +162,26 @@ class _FakeQuery:
             row = dict(payload)
             row.setdefault("id", str(uuid.uuid4()))
             row.setdefault("created_at", "2026-01-01T00:00:00+00:00")
-            if self.table_name == "jobs" and row["customer_id"] not in self.db.valid_customer_ids:
-                # Mirrors the real jobs_customer_id_fkey violation - same
-                # SQLSTATE postgrest surfaces, verified against the real
-                # local database while building app/db/errors.py.
-                raise APIError(
-                    {
-                        "code": "23503",
-                        "message": (
-                            'insert or update on table "jobs" violates '
-                            'foreign key constraint "jobs_customer_id_fkey"'
-                        ),
-                        "details": None,
-                        "hint": None,
-                    }
-                )
+            if self.table_name == "jobs":
+                profile_ids = {p["id"] for p in self.db.tables["profiles"]}
+                if row["customer_id"] not in profile_ids:
+                    # Mirrors the real jobs_customer_id_fkey violation - same
+                    # SQLSTATE postgrest surfaces, verified against the real
+                    # local database while building app/db/errors.py. Not
+                    # reachable via the API anymore since get_effective_customer_id
+                    # already validates the customer exists, but kept as
+                    # defense-in-depth parity with the real schema.
+                    raise APIError(
+                        {
+                            "code": "23503",
+                            "message": (
+                                'insert or update on table "jobs" violates '
+                                'foreign key constraint "jobs_customer_id_fkey"'
+                            ),
+                            "details": None,
+                            "hint": None,
+                        }
+                    )
             if self.table_name == "candidates":
                 row.setdefault("stage", "new")
                 for optional_field in ("email", "linkedin_url", "cv_text", "ai_score", "ai_summary"):
@@ -166,12 +198,54 @@ class _FakeQuery:
         raise AssertionError(f"FakeSupabase: unsupported operation {kind!r}")
 
 
-class FakeSupabase:
-    """In-memory stand-in for the Supabase client, scoped to jobs/candidates."""
+class _FakeAuthAdmin:
+    """Stand-in for supabase.auth.admin - just the two methods
+    app/routers/admin.py calls: invite_user_by_email and list_users."""
 
-    def __init__(self, valid_customer_ids: set[str] = frozenset()):
-        self.tables: dict[str, list[dict]] = {"jobs": [], "candidates": []}
-        self.valid_customer_ids = set(valid_customer_ids)
+    def __init__(self, db: "FakeSupabase"):
+        self.db = db
+        self.users: dict[str, str] = {}  # id -> email
+
+    def invite_user_by_email(self, email: str, options: dict | None = None):
+        if email in self.users.values():
+            raise AuthApiError(
+                "A user with this email address has already been registered",
+                422,
+                "email_exists",
+            )
+        user_id = str(uuid.uuid4())
+        data = (options or {}).get("data", {})
+        self.users[user_id] = email
+        # Mirrors the real handle_new_user trigger: the profiles row is a
+        # side effect of the invite, not a separate step.
+        self.db.tables["profiles"].append(
+            {
+                "id": user_id,
+                "role": data.get("role", "customer"),
+                "full_name": data.get("full_name"),
+                "company_name": data.get("company_name"),
+            }
+        )
+        return SimpleNamespace(user=SimpleNamespace(id=user_id, email=email))
+
+    def list_users(self):
+        return [
+            SimpleNamespace(id=user_id, email=email)
+            for user_id, email in self.users.items()
+        ]
+
+
+class FakeSupabase:
+    """In-memory stand-in for the Supabase client, scoped to jobs/candidates
+    (via .table()) and admin account management (via .auth.admin)."""
+
+    def __init__(self):
+        self.tables: dict[str, list[dict]] = {
+            "jobs": [],
+            "candidates": [],
+            "profiles": [],
+        }
+        self.auth = SimpleNamespace(admin=_FakeAuthAdmin(self))
 
     def table(self, name: str) -> _FakeQuery:
         return _FakeQuery(self, name)
@@ -179,11 +253,22 @@ class FakeSupabase:
 
 @pytest.fixture
 def fake_db():
-    """A fresh FakeSupabase per test, seeded with the two standard test
-    customer ids as valid job owners (so normal job creation succeeds;
-    an id outside this set simulates an admin passing an unknown
-    customer_id)."""
-    return FakeSupabase(valid_customer_ids={CUSTOMER_ID, OTHER_CUSTOMER_ID})
+    """A fresh FakeSupabase per test."""
+    return FakeSupabase()
+
+
+def _upsert_profile(fake_db: FakeSupabase, *, id: str, role: str) -> None:
+    """Ensure a profiles row (and a matching auth.admin email) exists for
+    `id` - every acted-as identity needs both, mirroring how a real JWT
+    always corresponds to a real auth.users + profiles row."""
+    for profile in fake_db.tables["profiles"]:
+        if profile["id"] == id:
+            profile["role"] = role
+            return
+    fake_db.tables["profiles"].append(
+        {"id": id, "role": role, "full_name": "Test", "company_name": None}
+    )
+    fake_db.auth.admin.users.setdefault(id, f"{id}@example.com")
 
 
 @pytest.fixture
@@ -201,6 +286,7 @@ def act_as(fake_db):
         app.dependency_overrides[get_current_profile] = lambda: CurrentProfile(
             id=id, role=role, full_name="Test", company_name=None
         )
+        _upsert_profile(fake_db, id=id, role=role)
 
     yield _act_as
 
