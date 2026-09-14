@@ -11,8 +11,9 @@ See `kickoff-prompt.md` for the full spec.
   CRUD endpoints for jobs and candidates with role/ownership-based
   authorization; `name` filter on `GET /candidates` and a kanban board
   endpoint (`GET /candidates/kanban`) grouping candidates by stage; admin
-  account creation (`POST /admin/accounts`, invite-only, no self-signup)
-  and "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
+  account creation (`POST /admin/accounts`, no self-signup - admins get a
+  password set directly, customers set their own via an invite email) and
+  "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
   header) with audit logging
 - Next up: AI CV assessment
 
@@ -46,9 +47,12 @@ uvicorn app.main:app --reload
 - Kanban board: http://127.0.0.1:8000/candidates/kanban - same ownership rules
   as `GET /candidates`, plus optional `job_id` and `name` (case-insensitive
   partial match) query filters; response is candidates grouped by stage
-- Admin accounts: http://127.0.0.1:8000/admin/accounts (`POST`, admin-only) invites
-  a new admin or customer via Supabase's invite email - no password is ever set
-  here, and there is no self-signup anywhere in the API
+- Admin accounts: http://127.0.0.1:8000/admin/accounts (`POST`, admin-only) - the
+  password flow differs by role: `role=admin` requires a `password` in the body
+  and the account is active immediately (no email sent); `role=customer` must
+  *omit* `password` (`400` if present) and is created via an invite email instead
+  - the customer sets their own password by following its link. There is no
+  self-signup anywhere in the API
 - Customer list: http://127.0.0.1:8000/admin/customers (`GET`, admin-only) -
   fuels a future frontend's "act as a customer" picker
 - Acting as a customer: any admin request to `/jobs` or `/candidates` accepts

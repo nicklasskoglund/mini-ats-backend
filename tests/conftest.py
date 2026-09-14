@@ -68,10 +68,11 @@ def mock_jwks(monkeypatch, ec_keypair):
 #
 # These tests never touch a real database. FakeSupabase implements just the
 # slice of the postgrest query-builder chain (select/insert/update, eq/in_/
-# ilike/maybe_single/execute) and the two supabase.auth.admin methods
-# (invite_user_by_email/list_users) that app/routers/*.py actually call,
-# against plain in-memory lists. It's swapped in via app.dependency_overrides
-# on get_supabase, the same mechanism FastAPI's own docs recommend for
+# ilike/maybe_single/execute) and the three supabase.auth.admin methods
+# (create_user/invite_user_by_email/list_users) that app/routers/*.py
+# actually call, against plain in-memory lists. It's swapped in via
+# app.dependency_overrides on get_supabase, the same mechanism FastAPI's
+# own docs recommend for
 # replacing a dependency in tests.
 
 CUSTOMER_ID = "00000000-0000-0000-0000-0000000000c1"
@@ -199,14 +200,15 @@ class _FakeQuery:
 
 
 class _FakeAuthAdmin:
-    """Stand-in for supabase.auth.admin - just the two methods
-    app/routers/admin.py calls: invite_user_by_email and list_users."""
+    """Stand-in for supabase.auth.admin - the three methods
+    app/routers/admin.py calls: create_user, invite_user_by_email, and
+    list_users."""
 
     def __init__(self, db: "FakeSupabase"):
         self.db = db
         self.users: dict[str, str] = {}  # id -> email
 
-    def invite_user_by_email(self, email: str, options: dict | None = None):
+    def _register(self, email: str, metadata: dict):
         if email in self.users.values():
             raise AuthApiError(
                 "A user with this email address has already been registered",
@@ -214,19 +216,27 @@ class _FakeAuthAdmin:
                 "email_exists",
             )
         user_id = str(uuid.uuid4())
-        data = (options or {}).get("data", {})
         self.users[user_id] = email
         # Mirrors the real handle_new_user trigger: the profiles row is a
-        # side effect of the invite, not a separate step.
+        # side effect of the user being created or invited, not a separate
+        # step - and not gated on email confirmation either (verified
+        # locally: "act as a customer" works right after an invite, before
+        # the customer ever confirms it).
         self.db.tables["profiles"].append(
             {
                 "id": user_id,
-                "role": data.get("role", "customer"),
-                "full_name": data.get("full_name"),
-                "company_name": data.get("company_name"),
+                "role": metadata.get("role", "customer"),
+                "full_name": metadata.get("full_name"),
+                "company_name": metadata.get("company_name"),
             }
         )
         return SimpleNamespace(user=SimpleNamespace(id=user_id, email=email))
+
+    def create_user(self, attributes: dict):
+        return self._register(attributes["email"], attributes.get("user_metadata", {}))
+
+    def invite_user_by_email(self, email: str, options: dict | None = None):
+        return self._register(email, (options or {}).get("data", {}))
 
     def list_users(self):
         return [
