@@ -4,7 +4,9 @@ Candidates CRUD endpoints.
 Candidates have no customer_id of their own - ownership flows through
 candidates.job_id -> jobs.customer_id, so every check here ultimately
 delegates to the job the candidate belongs to (get_job_or_404 /
-check_job_ownership, imported from app/routers/jobs.py).
+check_job_ownership, imported from app/routers/jobs.py). Like jobs.py,
+every endpoint here is scoped by get_effective_customer_id rather than the
+caller's raw role - see app/auth/effective_customer.py.
 """
 
 from uuid import UUID
@@ -12,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
-from app.auth.profile import CurrentProfile, get_current_profile
+from app.auth.effective_customer import get_effective_customer_id
 from app.db.client import get_supabase
 from app.db.errors import translate_constraint_violations
 from app.models.candidates import (
@@ -44,13 +46,14 @@ def _get_candidate_or_404(supabase: Client, candidate_id: UUID) -> dict:
 
 
 def _check_candidate_ownership(
-    supabase: Client, candidate: dict, profile: CurrentProfile
+    supabase: Client, candidate: dict, effective_customer_id: str | None
 ) -> None:
-    """Raise 403 unless the caller is admin or owns the job this candidate
-    belongs to. A missing job is treated as "forbidden" (deny by default)
-    rather than assumed impossible - even though ON DELETE CASCADE means a
-    candidate can't normally outlive its job."""
-    if profile.is_admin:
+    """Raise 403 unless there's no restriction (admin, not acting as
+    anyone) or the candidate's job belongs to the effective customer. A
+    missing job is treated as "forbidden" (deny by default) rather than
+    assumed impossible - even though ON DELETE CASCADE means a candidate
+    can't normally outlive its job."""
+    if effective_customer_id is None:
         return
 
     job_response = (
@@ -60,7 +63,7 @@ def _check_candidate_ownership(
         .maybe_single()
         .execute()
     )
-    if job_response is None or job_response.data["customer_id"] != profile.id:
+    if job_response is None or job_response.data["customer_id"] != effective_customer_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not your candidate"
         )
@@ -68,7 +71,7 @@ def _check_candidate_ownership(
 
 def _filtered_candidates(
     supabase: Client,
-    profile: CurrentProfile,
+    effective_customer_id: str | None,
     job_id: UUID | None,
     name: str | None,
 ) -> list[dict]:
@@ -78,12 +81,13 @@ def _filtered_candidates(
     they actually show.
 
     If job_id is given, its ownership is checked directly (404 if it
-    doesn't exist, 403 if the caller doesn't own it and isn't admin) -
+    doesn't exist, 403 if it doesn't belong to the effective customer) -
     an invalid or unowned job_id is a hard error here, never a silent
-    empty result. If omitted, a customer's results are restricted to
-    their own job ids up front (two plain queries rather than one
+    empty result. If omitted, results are restricted to the effective
+    customer's own job ids up front (two plain queries rather than one
     embedded-join filter, kept simple and easy to audit since this is
-    security-critical code); an admin without job_id sees everything.
+    security-critical code); no effective customer (plain admin) sees
+    everything.
 
     name, if given, is a case-insensitive partial match against
     candidates.name (PostgREST handles the value safely - no SQL
@@ -92,13 +96,16 @@ def _filtered_candidates(
     """
     if job_id is not None:
         job = get_job_or_404(supabase, job_id)
-        check_job_ownership(job, profile)
+        check_job_ownership(job, effective_customer_id)
         query = supabase.table("candidates").select("*").eq("job_id", str(job_id))
-    elif profile.is_admin:
+    elif effective_customer_id is None:
         query = supabase.table("candidates").select("*")
     else:
         owned_jobs = (
-            supabase.table("jobs").select("id").eq("customer_id", profile.id).execute()
+            supabase.table("jobs")
+            .select("id")
+            .eq("customer_id", effective_customer_id)
+            .execute()
         )
         owned_job_ids = [row["id"] for row in owned_jobs.data]
         if not owned_job_ids:
@@ -115,20 +122,20 @@ def _filtered_candidates(
 def list_candidates(
     job_id: UUID | None = None,
     name: str | None = None,
-    profile: CurrentProfile = Depends(get_current_profile),
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
     supabase: Client = Depends(get_supabase),
 ) -> list[dict]:
     """List candidates, optionally filtered by job_id and/or name (case-
     insensitive partial match). See _filtered_candidates for the full
     filtering/ownership rules."""
-    return _filtered_candidates(supabase, profile, job_id, name)
+    return _filtered_candidates(supabase, effective_customer_id, job_id, name)
 
 
 @router.get("/kanban", response_model=KanbanBoard)
 def list_candidates_kanban(
     job_id: UUID | None = None,
     name: str | None = None,
-    profile: CurrentProfile = Depends(get_current_profile),
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
     supabase: Client = Depends(get_supabase),
 ) -> KanbanBoard:
     """Same filtering/ownership rules as GET /candidates, grouped by stage
@@ -141,7 +148,7 @@ def list_candidates_kanban(
     would match it instead, trying (and failing) to parse "kanban" as a
     UUID.
     """
-    candidates = _filtered_candidates(supabase, profile, job_id, name)
+    candidates = _filtered_candidates(supabase, effective_customer_id, job_id, name)
     grouped: dict[str, list[dict]] = {stage: [] for stage in STAGES}
     for candidate in candidates:
         grouped[candidate["stage"]].append(candidate)
@@ -151,13 +158,16 @@ def list_candidates_kanban(
 @router.post("", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)
 def create_candidate(
     candidate_in: CandidateCreate,
-    profile: CurrentProfile = Depends(get_current_profile),
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
     supabase: Client = Depends(get_supabase),
 ) -> dict:
     """Create a candidate under a job. Ownership of the job determines who
-    may add candidates to it - same rule as reading/updating one."""
+    may add candidates to it - same rule as reading/updating one. Unlike
+    POST /jobs, there's no "no effective customer" 400 here: the job
+    already has an owner, so an admin with no X-Acting-As-Customer header
+    can add a candidate to any job (no restriction applies)."""
     job = get_job_or_404(supabase, candidate_in.job_id)
-    check_job_ownership(job, profile)
+    check_job_ownership(job, effective_customer_id)
 
     payload = candidate_in.model_dump(mode="json")
 
@@ -169,12 +179,12 @@ def create_candidate(
 @router.get("/{candidate_id}", response_model=CandidateRead)
 def get_candidate(
     candidate_id: UUID,
-    profile: CurrentProfile = Depends(get_current_profile),
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
     supabase: Client = Depends(get_supabase),
 ) -> dict:
     """Get a single candidate by id."""
     candidate = _get_candidate_or_404(supabase, candidate_id)
-    _check_candidate_ownership(supabase, candidate, profile)
+    _check_candidate_ownership(supabase, candidate, effective_customer_id)
     return candidate
 
 
@@ -182,12 +192,12 @@ def get_candidate(
 def update_candidate(
     candidate_id: UUID,
     candidate_in: CandidateUpdate,
-    profile: CurrentProfile = Depends(get_current_profile),
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
     supabase: Client = Depends(get_supabase),
 ) -> dict:
     """Partially update a candidate, including its stage."""
     candidate = _get_candidate_or_404(supabase, candidate_id)
-    _check_candidate_ownership(supabase, candidate, profile)
+    _check_candidate_ownership(supabase, candidate, effective_customer_id)
 
     updates = candidate_in.model_dump(exclude_unset=True, mode="json")
     if not updates:

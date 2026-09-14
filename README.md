@@ -10,8 +10,11 @@ See `kickoff-prompt.md` for the full spec.
   jobs and candidates table schemas with RLS, migrated to production;
   CRUD endpoints for jobs and candidates with role/ownership-based
   authorization; `name` filter on `GET /candidates` and a kanban board
-  endpoint (`GET /candidates/kanban`) grouping candidates by stage
-- Next up: admin account creation, AI CV assessment
+  endpoint (`GET /candidates/kanban`) grouping candidates by stage; admin
+  account creation (`POST /admin/accounts`, invite-only, no self-signup)
+  and "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
+  header) with audit logging
+- Next up: AI CV assessment
 
 ## Requirements
 
@@ -43,6 +46,17 @@ uvicorn app.main:app --reload
 - Kanban board: http://127.0.0.1:8000/candidates/kanban - same ownership rules
   as `GET /candidates`, plus optional `job_id` and `name` (case-insensitive
   partial match) query filters; response is candidates grouped by stage
+- Admin accounts: http://127.0.0.1:8000/admin/accounts (`POST`, admin-only) invites
+  a new admin or customer via Supabase's invite email - no password is ever set
+  here, and there is no self-signup anywhere in the API
+- Customer list: http://127.0.0.1:8000/admin/customers (`GET`, admin-only) -
+  fuels a future frontend's "act as a customer" picker
+- Acting as a customer: any admin request to `/jobs` or `/candidates` accepts
+  an `X-Acting-As-Customer: <customer-id>` header to scope the request to that
+  customer instead of seeing everything; an unknown id or a non-customer id
+  returns `404`. Every time the header actually resolves, a structured JSON
+  audit line is written to stdout (`admin_id`, `acting_as_customer_id`,
+  `endpoint`, `timestamp`)
 - Interactive API docs (Swagger UI): http://127.0.0.1:8000/docs
 - OpenAPI schema: http://127.0.0.1:8000/openapi.json
 
@@ -63,7 +77,7 @@ gitignored and must never be committed.
 | `ENVIRONMENT` | no | `development` / `production` |
 | `SUPABASE_URL` | **yes** | Base URL of the Supabase project |
 | `SUPABASE_JWKS_URL` | **yes** | JWKS endpoint used to verify JWTs; the app fails to start without it |
-| `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every jobs/candidates database read and write (bypasses RLS, since FastAPI - not Postgres - enforces ownership) and, from step 6, admin account creation. Never logged or returned in a response. |
+| `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every jobs/candidates database read and write (bypasses RLS, since FastAPI - not Postgres - enforces ownership) and for admin account creation via Supabase's Admin API. Never logged or returned in a response. |
 
 ## Tests
 
@@ -79,18 +93,21 @@ app/
 ├── core/
 │   └── config.py    # Settings (env vars), single source of truth
 ├── auth/
-│   ├── jwt.py       # get_current_user: verifies JWTs via Supabase JWKS
-│   └── profile.py   # get_current_profile: looks up role/name from `profiles`
+│   ├── jwt.py                # get_current_user: verifies JWTs via Supabase JWKS
+│   ├── profile.py            # get_current_profile / require_admin
+│   └── effective_customer.py # get_effective_customer_id: role + acting-as + audit log
 ├── db/
 │   ├── client.py    # get_supabase: cached client, service-role key
 │   └── errors.py    # translates Postgres constraint violations to 422
 ├── models/
 │   ├── jobs.py       # JobCreate / JobUpdate / JobRead
-│   └── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
+│   ├── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
+│   └── admin.py      # AdminAccountCreate / AdminAccountRead / CustomerSummary
 └── routers/
     ├── me.py          # GET /me - protected identity check
-    ├── jobs.py        # jobs CRUD, ownership checks
-    └── candidates.py  # candidates CRUD, ownership via parent job
+    ├── jobs.py        # jobs CRUD, scoped by get_effective_customer_id
+    ├── candidates.py  # candidates CRUD, ownership via parent job
+    └── admin.py       # admin-only: account creation, customer list
 tests/
 supabase/         # Supabase CLI project (schemas, migrations, config)
 ```
