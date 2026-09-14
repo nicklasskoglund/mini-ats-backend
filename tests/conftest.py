@@ -12,6 +12,7 @@ real database.
 """
 
 import os
+import re
 import uuid
 from types import SimpleNamespace
 
@@ -67,13 +68,31 @@ def mock_jwks(monkeypatch, ec_keypair):
 # These tests never touch a real database. FakeSupabase implements just the
 # slice of the postgrest query-builder chain app/routers/jobs.py and
 # app/routers/candidates.py actually call (select/insert/update, eq/in_/
-# maybe_single/execute) against plain in-memory lists. It's swapped in via
-# app.dependency_overrides on get_supabase, the same mechanism FastAPI's own
-# docs recommend for replacing a dependency in tests.
+# ilike/maybe_single/execute) against plain in-memory lists. It's swapped in
+# via app.dependency_overrides on get_supabase, the same mechanism FastAPI's
+# own docs recommend for replacing a dependency in tests.
 
 CUSTOMER_ID = "00000000-0000-0000-0000-0000000000c1"
 OTHER_CUSTOMER_ID = "00000000-0000-0000-0000-0000000000c2"
 ADMIN_ID = "00000000-0000-0000-0000-00000000ad01"
+
+
+def _ilike_pattern_to_regex(pattern: str) -> re.Pattern:
+    """Translate a Postgres ILIKE pattern (%/_ wildcards) into a compiled,
+    case-insensitive regex - just enough to mimic .ilike("name", "%x%") for
+    the tests, not a general SQL LIKE implementation.
+
+    Built character by character (% -> ".*", _ -> ".", anything else
+    escaped literally) rather than escaping the whole pattern up front and
+    substituting wildcards afterwards - re.escape leaves plain % and _
+    untouched (neither is a special regex character), so a substitute-after
+    approach would never find them.
+    """
+    regex_parts = [
+        ".*" if char == "%" else "." if char == "_" else re.escape(char)
+        for char in pattern
+    ]
+    return re.compile("^" + "".join(regex_parts) + "$", re.IGNORECASE)
 
 
 class _FakeResponse:
@@ -110,6 +129,10 @@ class _FakeQuery:
         self._filters.append(("in", field, list(values)))
         return self
 
+    def ilike(self, field, pattern):
+        self._filters.append(("ilike", field, _ilike_pattern_to_regex(pattern)))
+        return self
+
     def maybe_single(self):
         self._single = True
         return self
@@ -119,6 +142,8 @@ class _FakeQuery:
             if kind == "eq" and row.get(field) != value:
                 return False
             if kind == "in" and row.get(field) not in value:
+                return False
+            if kind == "ilike" and not value.match(str(row.get(field, ""))):
                 return False
         return True
 

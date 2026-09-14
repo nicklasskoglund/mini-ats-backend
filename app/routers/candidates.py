@@ -15,7 +15,13 @@ from supabase import Client
 from app.auth.profile import CurrentProfile, get_current_profile
 from app.db.client import get_supabase
 from app.db.errors import translate_constraint_violations
-from app.models.candidates import CandidateCreate, CandidateRead, CandidateUpdate
+from app.models.candidates import (
+    CandidateCreate,
+    CandidateRead,
+    CandidateUpdate,
+    KanbanBoard,
+    STAGES,
+)
 from app.routers.jobs import check_job_ownership, get_job_or_404
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
@@ -60,47 +66,86 @@ def _check_candidate_ownership(
         )
 
 
-@router.get("", response_model=list[CandidateRead])
-def list_candidates(
-    job_id: UUID | None = None,
-    profile: CurrentProfile = Depends(get_current_profile),
-    supabase: Client = Depends(get_supabase),
+def _filtered_candidates(
+    supabase: Client,
+    profile: CurrentProfile,
+    job_id: UUID | None,
+    name: str | None,
 ) -> list[dict]:
-    """List candidates, optionally filtered by job_id.
+    """Shared filtering/ownership logic behind GET /candidates and
+    GET /candidates/kanban - kept in one place so the two response shapes
+    (flat list vs. grouped-by-stage board) can never drift apart on what
+    they actually show.
 
     If job_id is given, its ownership is checked directly (404 if it
-    doesn't exist, 403 if the caller doesn't own it and isn't admin). If
-    omitted, a customer's results are restricted to their own job ids
-    up front - two plain queries rather than one embedded-join filter,
-    kept simple and easy to audit since this is security-critical code.
+    doesn't exist, 403 if the caller doesn't own it and isn't admin) -
+    an invalid or unowned job_id is a hard error here, never a silent
+    empty result. If omitted, a customer's results are restricted to
+    their own job ids up front (two plain queries rather than one
+    embedded-join filter, kept simple and easy to audit since this is
+    security-critical code); an admin without job_id sees everything.
+
+    name, if given, is a case-insensitive partial match against
+    candidates.name (PostgREST handles the value safely - no SQL
+    injection risk - though a literal '%' or '_' in the search term is
+    still interpreted as a wildcard).
     """
     if job_id is not None:
         job = get_job_or_404(supabase, job_id)
         check_job_ownership(job, profile)
-        return (
-            supabase.table("candidates")
-            .select("*")
-            .eq("job_id", str(job_id))
-            .execute()
-            .data
+        query = supabase.table("candidates").select("*").eq("job_id", str(job_id))
+    elif profile.is_admin:
+        query = supabase.table("candidates").select("*")
+    else:
+        owned_jobs = (
+            supabase.table("jobs").select("id").eq("customer_id", profile.id).execute()
         )
+        owned_job_ids = [row["id"] for row in owned_jobs.data]
+        if not owned_job_ids:
+            return []
+        query = supabase.table("candidates").select("*").in_("job_id", owned_job_ids)
 
-    if profile.is_admin:
-        return supabase.table("candidates").select("*").execute().data
+    if name is not None:
+        query = query.ilike("name", f"%{name}%")
 
-    owned_jobs = (
-        supabase.table("jobs").select("id").eq("customer_id", profile.id).execute()
-    )
-    owned_job_ids = [row["id"] for row in owned_jobs.data]
-    if not owned_job_ids:
-        return []
-    return (
-        supabase.table("candidates")
-        .select("*")
-        .in_("job_id", owned_job_ids)
-        .execute()
-        .data
-    )
+    return query.execute().data
+
+
+@router.get("", response_model=list[CandidateRead])
+def list_candidates(
+    job_id: UUID | None = None,
+    name: str | None = None,
+    profile: CurrentProfile = Depends(get_current_profile),
+    supabase: Client = Depends(get_supabase),
+) -> list[dict]:
+    """List candidates, optionally filtered by job_id and/or name (case-
+    insensitive partial match). See _filtered_candidates for the full
+    filtering/ownership rules."""
+    return _filtered_candidates(supabase, profile, job_id, name)
+
+
+@router.get("/kanban", response_model=KanbanBoard)
+def list_candidates_kanban(
+    job_id: UUID | None = None,
+    name: str | None = None,
+    profile: CurrentProfile = Depends(get_current_profile),
+    supabase: Client = Depends(get_supabase),
+) -> KanbanBoard:
+    """Same filtering/ownership rules as GET /candidates, grouped by stage
+    for a kanban board view instead of a flat list.
+
+    Registered before GET /{candidate_id} on purpose: FastAPI/Starlette
+    matches path routes in registration order, and both "/kanban" and
+    "/{candidate_id}" are single path segments under /candidates - if
+    {candidate_id} were registered first, a request to /candidates/kanban
+    would match it instead, trying (and failing) to parse "kanban" as a
+    UUID.
+    """
+    candidates = _filtered_candidates(supabase, profile, job_id, name)
+    grouped: dict[str, list[dict]] = {stage: [] for stage in STAGES}
+    for candidate in candidates:
+        grouped[candidate["stage"]].append(candidate)
+    return KanbanBoard(**grouped)
 
 
 @router.post("", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)

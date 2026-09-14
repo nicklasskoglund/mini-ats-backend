@@ -9,8 +9,9 @@ See `kickoff-prompt.md` for the full spec.
   Supabase's JWKS endpoint, exposed via a protected `GET /me`; profiles,
   jobs and candidates table schemas with RLS, migrated to production;
   CRUD endpoints for jobs and candidates with role/ownership-based
-  authorization
-- Next up: kanban filtering, admin account creation, AI CV assessment
+  authorization; `name` filter on `GET /candidates` and a kanban board
+  endpoint (`GET /candidates/kanban`) grouping candidates by stage
+- Next up: admin account creation, AI CV assessment
 
 ## Requirements
 
@@ -39,6 +40,9 @@ uvicorn app.main:app --reload
 - Jobs / candidates CRUD: http://127.0.0.1:8000/jobs, http://127.0.0.1:8000/candidates
   (same bearer header; customers see/edit only their own, admins see everything -
   full request/response shapes are in `/docs`)
+- Kanban board: http://127.0.0.1:8000/candidates/kanban - same ownership rules
+  as `GET /candidates`, plus optional `job_id` and `name` (case-insensitive
+  partial match) query filters; response is candidates grouped by stage
 - Interactive API docs (Swagger UI): http://127.0.0.1:8000/docs
 - OpenAPI schema: http://127.0.0.1:8000/openapi.json
 
@@ -82,7 +86,7 @@ app/
 │   └── errors.py    # translates Postgres constraint violations to 422
 ├── models/
 │   ├── jobs.py       # JobCreate / JobUpdate / JobRead
-│   └── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead
+│   └── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
 └── routers/
     ├── me.py          # GET /me - protected identity check
     ├── jobs.py        # jobs CRUD, ownership checks
