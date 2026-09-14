@@ -76,3 +76,20 @@ def get_current_profile(
         full_name=row.get("full_name"),
         company_name=row.get("company_name"),
     )
+
+
+def require_admin(
+    profile: CurrentProfile = Depends(get_current_profile),
+) -> CurrentProfile:
+    """FastAPI dependency: only let admins through.
+
+    Used on the /admin/* endpoints, where there is no ownership concept to
+    fall back on - a non-admin caller is refused outright, not scoped to
+    "their own" anything.
+    """
+    if not profile.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return profile
