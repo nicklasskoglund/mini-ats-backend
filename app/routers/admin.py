@@ -9,6 +9,7 @@ once a customer id is chosen).
 """
 
 from contextlib import contextmanager
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
@@ -154,3 +155,66 @@ def list_customers(
     return [
         {**profile, "email": emails_by_id.get(profile["id"])} for profile in profiles
     ]
+
+
+@router.delete("/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    account_id: UUID,
+    _admin: CurrentProfile = Depends(require_admin),
+    supabase: Client = Depends(get_supabase),
+) -> None:
+    """Delete an admin or customer account. Always admin-only - there is
+    no self-service account deletion for customers (same reasoning as
+    PATCH /profile being the only customer-facing account-editing surface).
+
+    For a customer account: explicitly deletes their candidates, then
+    their jobs, then the auth user itself. Deliberately explicit even
+    though it's technically redundant: verified locally that
+    auth.admin.delete_user() alone already cascades through profiles ->
+    jobs -> candidates via the existing ON DELETE CASCADE chain. Kept
+    explicit anyway so this endpoint doesn't silently depend on a cascade
+    three tables deep never changing, and so each step is independently
+    auditable/testable.
+
+    For an admin account: no jobs/candidates to touch, just the auth user.
+
+    auth.admin.delete_user() removes the auth.users row (not just
+    `profiles`) - deleting only the profiles row would leave a stray,
+    unusable auth account behind and never free up the email address.
+    """
+    profile_response = (
+        supabase.table("profiles")
+        .select("id, role")
+        .eq("id", str(account_id))
+        .maybe_single()
+        .execute()
+    )
+    if profile_response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Account not found"
+        )
+
+    if profile_response.data["role"] == "customer":
+        owned_jobs = (
+            supabase.table("jobs")
+            .select("id")
+            .eq("customer_id", str(account_id))
+            .execute()
+        )
+        job_ids = [row["id"] for row in owned_jobs.data]
+        if job_ids:
+            supabase.table("candidates").delete().in_("job_id", job_ids).execute()
+            supabase.table("jobs").delete().eq(
+                "customer_id", str(account_id)
+            ).execute()
+
+    try:
+        supabase.auth.admin.delete_user(str(account_id))
+    except AuthApiError as exc:
+        # Shouldn't happen - we just confirmed the profile exists - but
+        # treated as a controlled 404 rather than an unhandled 500 if that
+        # invariant is ever violated (e.g. a profiles row somehow outliving
+        # its auth.users row).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Account not found"
+        ) from exc

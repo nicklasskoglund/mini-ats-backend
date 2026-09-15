@@ -127,3 +127,31 @@ def update_job(
             supabase.table("jobs").update(updates).eq("id", str(job_id)).execute()
         )
     return response.data[0]
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(
+    job_id: UUID,
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
+    supabase: Client = Depends(get_supabase),
+) -> None:
+    """Delete a job, refusing if it still has candidates attached.
+
+    jobs.status already handles normal closing of a job; hard deletion is
+    for mistakes/test data, not the normal lifecycle, so the safe default
+    is to never silently sweep away real candidate data - candidates must
+    be removed first, explicitly.
+    """
+    job = get_job_or_404(supabase, job_id)
+    check_job_ownership(job, effective_customer_id)
+
+    remaining_candidates = (
+        supabase.table("candidates").select("id").eq("job_id", str(job_id)).execute()
+    )
+    if remaining_candidates.data:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job still has candidates attached - remove them first",
+        )
+
+    supabase.table("jobs").delete().eq("id", str(job_id)).execute()

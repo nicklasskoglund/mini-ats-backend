@@ -152,3 +152,53 @@ def test_owner_updates_job(act_as):
 
     assert response.status_code == 200
     assert response.json()["status"] == "closed"
+
+
+def test_owner_deletes_job_without_candidates(act_as):
+    act_as(id=CUSTOMER_ID, role="customer")
+    job_id = client.post("/jobs", json={"title": "x"}).json()["id"]
+
+    response = client.delete(f"/jobs/{job_id}")
+
+    assert response.status_code == 204
+    assert client.get(f"/jobs/{job_id}").status_code == 404
+
+
+def test_deleting_job_with_candidates_returns_409(act_as):
+    act_as(id=CUSTOMER_ID, role="customer")
+    job_id = client.post("/jobs", json={"title": "x"}).json()["id"]
+    client.post("/candidates", json={"job_id": job_id, "name": "Alice"})
+
+    response = client.delete(f"/jobs/{job_id}")
+
+    assert response.status_code == 409
+    # Nothing was deleted - the job is still there.
+    assert client.get(f"/jobs/{job_id}").status_code == 200
+
+
+def test_non_owner_cannot_delete_job(act_as):
+    act_as(id=CUSTOMER_ID, role="customer")
+    job_id = client.post("/jobs", json={"title": "x"}).json()["id"]
+
+    act_as(id=OTHER_CUSTOMER_ID, role="customer")
+    response = client.delete(f"/jobs/{job_id}")
+
+    assert response.status_code == 403
+
+
+def test_admin_acting_as_customer_deletes_their_job(act_as):
+    act_as(id=ADMIN_ID, role="admin")
+    act_as(id=CUSTOMER_ID, role="customer")  # registers the customer profile
+    act_as(id=ADMIN_ID, role="admin")  # switch back to the acting admin
+
+    job_id = client.post(
+        "/jobs",
+        json={"title": "x"},
+        headers={"X-Acting-As-Customer": CUSTOMER_ID},
+    ).json()["id"]
+
+    response = client.delete(
+        f"/jobs/{job_id}", headers={"X-Acting-As-Customer": CUSTOMER_ID}
+    )
+
+    assert response.status_code == 204
