@@ -9,6 +9,7 @@ password (create_user, active immediately); role="customer" forbids one
 """
 
 from fastapi.testclient import TestClient
+from supabase_auth.errors import AuthApiError
 
 from app.main import app
 from tests.conftest import ADMIN_ID, CUSTOMER_ID
@@ -156,6 +157,53 @@ def test_duplicate_customer_email_returns_409(act_as):
 
     second = client.post("/admin/accounts", json=payload)
     assert second.status_code == 409
+
+
+def test_invalid_email_from_supabase_returns_502(act_as, fake_db):
+    """Regression test: a non-email_exists AuthApiError (confirmed in
+    production for an invalid email domain, and separately for Supabase's
+    email rate limit) used to bubble up as an unhandled 500. Supabase's
+    own message is included in the 502 detail - this endpoint is
+    admin-only, so that's useful operational feedback, not a leak to an
+    untrusted caller."""
+    act_as(id=ADMIN_ID, role="admin")
+    fake_db.auth.admin.next_error = AuthApiError(
+        'Email address "nope@example.com" is invalid', 422, "email_address_invalid"
+    )
+
+    response = client.post(
+        "/admin/accounts",
+        json={
+            "email": "nope@example.com",
+            "role": "customer",
+            "company_name": "Acme Inc",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "is invalid" in response.json()["detail"]
+
+
+def test_rate_limit_from_supabase_returns_502(act_as, fake_db):
+    """Same broad handling, exercised via the admin (create_user) path
+    rather than the customer (invite_user_by_email) path, since both
+    calls share the same error translation."""
+    act_as(id=ADMIN_ID, role="admin")
+    fake_db.auth.admin.next_error = AuthApiError(
+        "email rate limit exceeded", 429, "over_email_send_rate_limit"
+    )
+
+    response = client.post(
+        "/admin/accounts",
+        json={
+            "email": "new-admin@example.com",
+            "password": "supersecret123",
+            "role": "admin",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "rate limit" in response.json()["detail"]
 
 
 def test_acting_as_newly_invited_customer_works_before_confirmation(act_as):

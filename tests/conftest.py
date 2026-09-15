@@ -255,8 +255,16 @@ class _FakeAuthAdmin:
     def __init__(self, db: "FakeSupabase"):
         self.db = db
         self.users: dict[str, str] = {}  # id -> email
+        # Settable by tests to simulate any AuthApiError (invalid email,
+        # rate limit, ...) from the next create_user/invite_user_by_email
+        # call - consumed (reset to None) once raised, so it only affects
+        # a single call.
+        self.next_error: AuthApiError | None = None
 
     def _register(self, email: str, metadata: dict):
+        if self.next_error is not None:
+            error, self.next_error = self.next_error, None
+            raise error
         if email in self.users.values():
             raise AuthApiError(
                 "A user with this email address has already been registered",
