@@ -13,17 +13,16 @@ from uuid import UUID
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException, status
-from supabase import Client
 
 from app.auth.effective_customer import get_effective_customer_id
 from app.db.client import get_supabase
 from app.db.errors import translate_constraint_violations
 from app.models.candidates import (
+    STAGES,
     CandidateCreate,
     CandidateRead,
     CandidateUpdate,
     KanbanBoard,
-    STAGES,
 )
 from app.routers.jobs import check_job_ownership, get_job_or_404
 from app.services.ai_assessment import (
@@ -31,6 +30,7 @@ from app.services.ai_assessment import (
     assess_candidate,
     get_anthropic_client,
 )
+from supabase import Client
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 

@@ -18,12 +18,12 @@ job a candidate belongs to.
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from supabase import Client
 
 from app.auth.effective_customer import get_effective_customer_id
 from app.db.client import get_supabase
 from app.db.errors import translate_constraint_violations
 from app.models.jobs import JobCreate, JobRead, JobUpdate
+from supabase import Client
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 

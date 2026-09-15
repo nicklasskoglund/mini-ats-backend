@@ -11,10 +11,10 @@ claimed by the client.
 """
 
 from fastapi import Depends, HTTPException, status
-from supabase import Client
 
 from app.auth.jwt import CurrentUser, get_current_user
 from app.db.client import get_supabase
+from supabase import Client
 
 
 class CurrentProfile:

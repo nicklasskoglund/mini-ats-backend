@@ -10,6 +10,7 @@ wrapper catches that (and other constraint violation classes, as cheap
 defense-in-depth) and turns it into a normal, documented client error.
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 from fastapi import HTTPException, status
@@ -25,7 +26,7 @@ _CONSTRAINT_VIOLATION_CODES = {
 
 
 @contextmanager
-def translate_constraint_violations():
+def translate_constraint_violations() -> Iterator[None]:
     """Wrap a Supabase write call; re-raise known constraint violations as
     HTTP 422 instead of letting them propagate as a 500."""
     try:
