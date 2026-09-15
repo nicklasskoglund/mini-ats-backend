@@ -219,6 +219,20 @@ def update_candidate(
     return response.data[0]
 
 
+@router.delete("/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_candidate(
+    candidate_id: UUID,
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
+    supabase: Client = Depends(get_supabase),
+) -> None:
+    """Delete a candidate. No child rows to worry about, so no cascade
+    check needed (unlike DELETE /jobs/{id})."""
+    candidate = _get_candidate_or_404(supabase, candidate_id)
+    _check_candidate_ownership(supabase, candidate, effective_customer_id)
+
+    supabase.table("candidates").delete().eq("id", str(candidate_id)).execute()
+
+
 @router.post("/{candidate_id}/assess", response_model=CandidateRead)
 def assess_candidate_endpoint(
     candidate_id: UUID,

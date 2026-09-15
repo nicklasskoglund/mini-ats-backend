@@ -262,3 +262,27 @@ def test_update_candidate_phone_and_notes(act_as):
     body = response.json()
     assert body["phone"] == "+46701234567"
     assert body["notes"] == "Called, left voicemail."
+
+
+def test_owner_deletes_candidate(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    candidate_id = client.post(
+        "/candidates", json={"job_id": job_id, "name": "Alice"}
+    ).json()["id"]
+
+    response = client.delete(f"/candidates/{candidate_id}")
+
+    assert response.status_code == 204
+    assert client.get(f"/candidates/{candidate_id}").status_code == 404
+
+
+def test_non_owner_cannot_delete_candidate(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    candidate_id = client.post(
+        "/candidates", json={"job_id": job_id, "name": "Alice"}
+    ).json()["id"]
+
+    act_as(id=OTHER_CUSTOMER_ID, role="customer")
+    response = client.delete(f"/candidates/{candidate_id}")
+
+    assert response.status_code == 403

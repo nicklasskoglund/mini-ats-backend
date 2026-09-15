@@ -16,7 +16,8 @@ See `kickoff-prompt.md` for the full spec.
   "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
   header) with audit logging; extended profile fields (`GET`/`PATCH /profile`)
   and candidate `phone`/`notes` fields; AI CV assessment
-  (`POST /candidates/{id}/assess`)
+  (`POST /candidates/{id}/assess`); `DELETE` endpoints for jobs, candidates,
+  and admin/customer accounts
 - Next up: Postman collection covering every endpoint, `/openapi.json` export
 
 ## Requirements
@@ -45,7 +46,10 @@ uvicorn app.main:app --reload
   `Authorization: Bearer <supabase-jwt>` header)
 - Jobs / candidates CRUD: http://127.0.0.1:8000/jobs, http://127.0.0.1:8000/candidates
   (same bearer header; customers see/edit only their own, admins see everything -
-  full request/response shapes are in `/docs`)
+  full request/response shapes are in `/docs`). `DELETE` uses the same ownership
+  rules; `DELETE /jobs/{id}` returns `409` if the job still has candidates
+  attached - remove those first, hard deletion never silently sweeps away
+  candidate data
 - Kanban board: http://127.0.0.1:8000/candidates/kanban - same ownership rules
   as `GET /candidates`, plus optional `job_id` and `name` (case-insensitive
   partial match) query filters; response is candidates grouped by stage
@@ -57,6 +61,12 @@ uvicorn app.main:app --reload
   self-signup anywhere in the API
 - Customer list: http://127.0.0.1:8000/admin/customers (`GET`, admin-only) -
   fuels a future frontend's "act as a customer" picker
+- Delete an account: `DELETE /admin/accounts/{id}` (admin-only, `404` if
+  unknown) - always admin-only, no customer self-service deletion. For a
+  customer account, explicitly deletes their candidates, then their jobs,
+  then the auth user itself; for an admin account, just the auth user.
+  Removing the auth user (not just the `profiles` row) also frees up their
+  email address for reuse
 - Profile: http://127.0.0.1:8000/profile (`GET`/`PATCH`) - the effective
   customer's own profile (`website_url`, `linkedin_url`, `phone`,
   `contact_email`, `address`, `description`, plus `full_name`/`company_name`

@@ -220,3 +220,85 @@ def test_non_admin_cannot_list_customers(act_as):
     act_as(id=CUSTOMER_ID, role="customer")
     response = client.get("/admin/customers")
     assert response.status_code == 403
+
+
+def test_admin_deletes_customer_account_cascades_jobs_and_candidates(act_as):
+    """The explicit cascade (candidates -> jobs -> account) removes
+    everything, not just the account row."""
+    act_as(id=ADMIN_ID, role="admin")
+    customer_id = client.post(
+        "/admin/accounts",
+        json={
+            "email": "to-delete@example.com",
+            "role": "customer",
+            "company_name": "Acme Inc",
+        },
+    ).json()["id"]
+
+    job_id = client.post(
+        "/jobs", json={"title": "x"}, headers={"X-Acting-As-Customer": customer_id}
+    ).json()["id"]
+    client.post(
+        "/candidates",
+        json={"job_id": job_id, "name": "Alice"},
+        headers={"X-Acting-As-Customer": customer_id},
+    )
+
+    response = client.delete(f"/admin/accounts/{customer_id}")
+    assert response.status_code == 204
+
+    # Account gone.
+    remaining_customers = client.get("/admin/customers").json()
+    assert customer_id not in [c["id"] for c in remaining_customers]
+
+    # Acting as that (now nonexistent) customer fails - no profile left.
+    acting_as_response = client.get(
+        "/jobs", headers={"X-Acting-As-Customer": customer_id}
+    )
+    assert acting_as_response.status_code == 404
+
+    # Their job is gone too, not just orphaned.
+    all_jobs = client.get("/jobs").json()
+    assert job_id not in [j["id"] for j in all_jobs]
+
+
+def test_admin_deletes_admin_account(act_as):
+    """An admin account has no jobs/candidates to cascade - just deleted."""
+    act_as(id=ADMIN_ID, role="admin")
+    other_admin_id = client.post(
+        "/admin/accounts",
+        json={
+            "email": "admin-to-delete@example.com",
+            "password": "supersecret123",
+            "role": "admin",
+        },
+    ).json()["id"]
+
+    response = client.delete(f"/admin/accounts/{other_admin_id}")
+
+    assert response.status_code == 204
+
+
+def test_non_admin_cannot_delete_account(act_as):
+    act_as(id=ADMIN_ID, role="admin")
+    target_id = client.post(
+        "/admin/accounts",
+        json={
+            "email": "target@example.com",
+            "role": "customer",
+            "company_name": "Acme Inc",
+        },
+    ).json()["id"]
+
+    act_as(id=CUSTOMER_ID, role="customer")
+    response = client.delete(f"/admin/accounts/{target_id}")
+
+    assert response.status_code == 403
+
+
+def test_deleting_unknown_account_returns_404(act_as):
+    act_as(id=ADMIN_ID, role="admin")
+    response = client.delete(
+        "/admin/accounts/00000000-0000-0000-0000-000000000099"
+    )
+    assert response.status_code == 404
