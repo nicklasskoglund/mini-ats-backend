@@ -11,6 +11,7 @@ FakeSupabase below) used by the jobs/candidates/admin CRUD tests instead of
 a real database.
 """
 
+import json
 import os
 import re
 import uuid
@@ -28,6 +29,7 @@ os.environ.setdefault(
     "https://test.supabase.co/auth/v1/.well-known/jwks.json",
 )
 os.environ.setdefault("SUPABASE_SECRET_KEY", "test-secret-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
 
 @pytest.fixture
@@ -193,6 +195,8 @@ class _FakeQuery:
                     "notes",
                     "ai_score",
                     "ai_summary",
+                    "ai_strengths",
+                    "ai_gaps",
                 ):
                     row.setdefault(optional_field, None)
             self.rows.append(row)
@@ -331,3 +335,70 @@ def act_as(fake_db):
     yield _act_as
 
     app.dependency_overrides.clear()
+
+
+# --- AI assessment test support ---------------------------------------------
+#
+# POST /candidates/{id}/assess never calls the real Anthropic API. FakeAI
+# stands in for the one method app/services/ai_assessment.py calls
+# (messages.create), returning a canned response or raising a canned error -
+# swapped in via app.dependency_overrides on get_anthropic_client.
+
+
+class _FakeAIResponse:
+    """Mimics an Anthropic Message enough for assess_candidate: a list of
+    text content blocks, same shape app/services/ai_assessment.py reads
+    (block.type == "text", block.text)."""
+
+    def __init__(self, text: str):
+        self.content = [SimpleNamespace(type="text", text=text)]
+
+
+class FakeAI:
+    """Stand-in for anthropic.Anthropic - just messages.create."""
+
+    def __init__(
+        self,
+        *,
+        payload: dict | None = None,
+        text: str | None = None,
+        error: Exception | None = None,
+    ):
+        self._payload = payload
+        self._text = text
+        self._error = error
+        self.messages = SimpleNamespace(create=self._create)
+
+    def _create(self, **_kwargs):
+        if self._error is not None:
+            raise self._error
+        # `text` wins when given (e.g. a payload wrapped in a markdown
+        # code fence, to test that assess_candidate strips it) - it's the
+        # raw response body, whereas `payload` is the convenience path
+        # that's always clean JSON.
+        return _FakeAIResponse(self._text if self._text is not None else json.dumps(self._payload))
+
+
+@pytest.fixture
+def mock_ai_assessment():
+    """Returns a function to configure the AI client behind
+    POST /candidates/{id}/assess: pass `payload` for a canned successful
+    JSON response, `text` for a raw response body (e.g. wrapped in a
+    markdown code fence), or `error` to simulate an Anthropic failure.
+    Override is cleared after the test regardless of outcome."""
+    from app.main import app
+    from app.services.ai_assessment import get_anthropic_client
+
+    def _mock(
+        *,
+        payload: dict | None = None,
+        text: str | None = None,
+        error: Exception | None = None,
+    ):
+        app.dependency_overrides[get_anthropic_client] = lambda: FakeAI(
+            payload=payload, text=text, error=error
+        )
+
+    yield _mock
+
+    app.dependency_overrides.pop(get_anthropic_client, None)
