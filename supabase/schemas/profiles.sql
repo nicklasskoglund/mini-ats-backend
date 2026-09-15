@@ -4,6 +4,15 @@ create table public.profiles (
   role text not null default 'customer' check (role in ('admin', 'customer')),
   full_name text,
   company_name text,
+  website_url text,
+  linkedin_url text,
+  phone text,
+  -- Business contact address, distinct from the auth.users login email
+  -- GET /admin/customers already returns under the key "email" - named
+  -- contact_email specifically to avoid that collision.
+  contact_email text,
+  address text,
+  description text,
   created_at timestamptz not null default now()
 );
 

@@ -185,7 +185,15 @@ class _FakeQuery:
                     )
             if self.table_name == "candidates":
                 row.setdefault("stage", "new")
-                for optional_field in ("email", "linkedin_url", "cv_text", "ai_score", "ai_summary"):
+                for optional_field in (
+                    "email",
+                    "phone",
+                    "linkedin_url",
+                    "cv_text",
+                    "notes",
+                    "ai_score",
+                    "ai_summary",
+                ):
                     row.setdefault(optional_field, None)
             self.rows.append(row)
             return _FakeResponse([dict(row)])
@@ -197,6 +205,33 @@ class _FakeQuery:
             return _FakeResponse([dict(r) for r in matched])
 
         raise AssertionError(f"FakeSupabase: unsupported operation {kind!r}")
+
+
+_PROFILE_OPTIONAL_FIELDS = (
+    "full_name",
+    "company_name",
+    "website_url",
+    "linkedin_url",
+    "phone",
+    "contact_email",
+    "address",
+    "description",
+)
+
+
+def _new_profile_row(user_id: str, role: str, metadata: dict | None = None) -> dict:
+    """Build a full profiles row (every column ProfileRead/CustomerSummary
+    expect present, even if None) - mirrors what handle_new_user actually
+    populates: role/full_name/company_name from metadata, everything else
+    left null until a later PATCH /profile."""
+    metadata = metadata or {}
+    row = {field: None for field in _PROFILE_OPTIONAL_FIELDS}
+    row["id"] = user_id
+    row["role"] = role
+    row["full_name"] = metadata.get("full_name")
+    row["company_name"] = metadata.get("company_name")
+    row["created_at"] = "2026-01-01T00:00:00+00:00"
+    return row
 
 
 class _FakeAuthAdmin:
@@ -223,12 +258,7 @@ class _FakeAuthAdmin:
         # locally: "act as a customer" works right after an invite, before
         # the customer ever confirms it).
         self.db.tables["profiles"].append(
-            {
-                "id": user_id,
-                "role": metadata.get("role", "customer"),
-                "full_name": metadata.get("full_name"),
-                "company_name": metadata.get("company_name"),
-            }
+            _new_profile_row(user_id, metadata.get("role", "customer"), metadata)
         )
         return SimpleNamespace(user=SimpleNamespace(id=user_id, email=email))
 
@@ -276,7 +306,7 @@ def _upsert_profile(fake_db: FakeSupabase, *, id: str, role: str) -> None:
             profile["role"] = role
             return
     fake_db.tables["profiles"].append(
-        {"id": id, "role": role, "full_name": "Test", "company_name": None}
+        _new_profile_row(id, role, {"full_name": "Test"})
     )
     fake_db.auth.admin.users.setdefault(id, f"{id}@example.com")
 

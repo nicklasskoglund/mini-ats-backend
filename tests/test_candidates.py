@@ -214,3 +214,51 @@ def test_kanban_combines_job_id_and_name_filter(act_as):
     assert response.status_code == 200
     board = response.json()
     assert [c["name"] for c in board["new"]] == ["Alice"]
+
+
+def test_create_candidate_with_phone_and_notes(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+
+    created = client.post(
+        "/candidates",
+        json={
+            "job_id": job_id,
+            "name": "Alice",
+            "phone": "+46701234567",
+            "notes": "Strong communicator, follow up next week.",
+        },
+    )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["phone"] == "+46701234567"
+    assert body["notes"] == "Strong communicator, follow up next week."
+
+
+def test_create_candidate_without_phone_and_notes(act_as):
+    """Both fields stay optional - omitting them is still a valid request."""
+    job_id = _create_job(act_as, CUSTOMER_ID)
+
+    created = client.post("/candidates", json={"job_id": job_id, "name": "Bob"})
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["phone"] is None
+    assert body["notes"] is None
+
+
+def test_update_candidate_phone_and_notes(act_as):
+    job_id = _create_job(act_as, CUSTOMER_ID)
+    candidate_id = client.post(
+        "/candidates", json={"job_id": job_id, "name": "Alice"}
+    ).json()["id"]
+
+    response = client.patch(
+        f"/candidates/{candidate_id}",
+        json={"phone": "+46701234567", "notes": "Called, left voicemail."},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phone"] == "+46701234567"
+    assert body["notes"] == "Called, left voicemail."

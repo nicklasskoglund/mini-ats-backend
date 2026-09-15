@@ -14,7 +14,8 @@ See `kickoff-prompt.md` for the full spec.
   account creation (`POST /admin/accounts`, no self-signup - admins get a
   password set directly, customers set their own via an invite email) and
   "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
-  header) with audit logging
+  header) with audit logging; extended profile fields (`GET`/`PATCH /profile`)
+  and candidate `phone`/`notes` fields
 - Next up: AI CV assessment
 
 ## Requirements
@@ -55,6 +56,13 @@ uvicorn app.main:app --reload
   self-signup anywhere in the API
 - Customer list: http://127.0.0.1:8000/admin/customers (`GET`, admin-only) -
   fuels a future frontend's "act as a customer" picker
+- Profile: http://127.0.0.1:8000/profile (`GET`/`PATCH`) - the effective
+  customer's own profile (`website_url`, `linkedin_url`, `phone`,
+  `contact_email`, `address`, `description`, plus `full_name`/`company_name`
+  which are now editable here too). Scoped by the same effective-customer
+  rules as jobs/candidates: a customer gets their own row, an admin gets
+  `400` without `X-Acting-As-Customer` and the chosen customer's row with
+  it. `GET /me` is unaffected - it stays a plain identity check
 - Acting as a customer: any admin request to `/jobs` or `/candidates` accepts
   an `X-Acting-As-Customer: <customer-id>` header to scope the request to that
   customer instead of seeing everything; an unknown id or a non-customer id
@@ -106,12 +114,14 @@ app/
 ├── models/
 │   ├── jobs.py       # JobCreate / JobUpdate / JobRead
 │   ├── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
-│   └── admin.py      # AdminAccountCreate / AdminAccountRead / CustomerSummary
+│   ├── admin.py      # AdminAccountCreate / AdminAccountRead / CustomerSummary
+│   └── profile.py    # ProfileRead / ProfileUpdate
 └── routers/
     ├── me.py          # GET /me - protected identity check
     ├── jobs.py        # jobs CRUD, scoped by get_effective_customer_id
     ├── candidates.py  # candidates CRUD, ownership via parent job
-    └── admin.py       # admin-only: account creation, customer list
+    ├── admin.py       # admin-only: account creation, customer list
+    └── profile.py     # GET/PATCH /profile, scoped by get_effective_customer_id
 tests/
 supabase/         # Supabase CLI project (schemas, migrations, config)
 ```
