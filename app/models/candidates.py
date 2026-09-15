@@ -58,6 +58,8 @@ class CandidateRead(BaseModel):
     stage: Stage
     ai_score: int | None
     ai_summary: str | None
+    ai_strengths: list[str] | None
+    ai_gaps: list[str] | None
     created_at: datetime
 
 

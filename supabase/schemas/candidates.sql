@@ -16,6 +16,13 @@ create table public.candidates (
     check (stage in ('new', 'screening', 'interview', 'offer', 'hired', 'rejected')),
   ai_score int,
   ai_summary text,
+  -- Plain string arrays, not jsonb: strengths/gaps are always flat lists
+  -- of short strings (see cv-screening-SKILL.md's response schema), never
+  -- nested structures, so Postgres's native array type is the simpler
+  -- fit - PostgREST round-trips it to/from a JSON array with no extra
+  -- encoding step in the backend.
+  ai_strengths text[],
+  ai_gaps text[],
   created_at timestamptz not null default now()
 );
 
