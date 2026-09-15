@@ -23,17 +23,27 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @contextmanager
-def _translate_email_exists():
-    """Wrap a Supabase Auth Admin API call; re-raise a duplicate-email
-    error as 409, instead of letting Supabase's own 422 leak through.
+def _translate_auth_api_errors():
+    """Wrap a Supabase Auth Admin API call; translate its errors into
+    controlled client-facing responses instead of letting an AuthApiError
+    bubble up as an unhandled 500 - confirmed in production for two
+    separate cases (an invalid email domain, and Supabase's own email
+    rate limit), neither of which was previously caught.
 
-    Verified locally against both calls this router makes:
-    create_user() and invite_user_by_email() each raise AuthApiError with
-    code="email_exists" (status 422 from Supabase itself) for an email
-    that belongs to an existing, confirmed user - checked independently
-    for each, since they're different API calls and nothing guarantees
-    they'd share an error shape. Re-inviting an unconfirmed/pending invite
-    does NOT error (Supabase just resends it), which is fine as-is.
+    - code == "email_exists": 409, an account with this email already
+      exists. Verified locally against both calls this router makes:
+      create_user() and invite_user_by_email() each raise this identically
+      (status 422 from Supabase itself) for an email that belongs to an
+      existing, confirmed user. Re-inviting an unconfirmed/pending invite
+      does NOT error (Supabase just resends it), which is fine as-is.
+    - anything else: 502, with Supabase's own message included in the
+      detail. Same status code POST /candidates/{id}/assess uses for any
+      Anthropic-side failure (external service rejected the request, not
+      our bug), but unlike that endpoint the message isn't genericized
+      here - this endpoint is admin-only already, so Supabase's error text
+      ("Email address ... is invalid", "email rate limit exceeded") is
+      useful operational feedback for the admin, not something to hide
+      from an untrusted caller.
     """
     try:
         yield
@@ -43,7 +53,10 @@ def _translate_email_exists():
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email already exists",
             ) from exc
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Account creation failed: {exc.message}",
+        ) from exc
 
 
 @router.post(
@@ -89,7 +102,7 @@ def create_account(
                 ),
             )
 
-        with _translate_email_exists():
+        with _translate_auth_api_errors():
             result = supabase.auth.admin.invite_user_by_email(
                 account_in.email,
                 {
@@ -107,7 +120,7 @@ def create_account(
                 detail="password is required when role is 'admin'",
             )
 
-        with _translate_email_exists():
+        with _translate_auth_api_errors():
             result = supabase.auth.admin.create_user(
                 {
                     "email": account_in.email,
