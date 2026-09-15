@@ -6,8 +6,12 @@ create table public.candidates (
   job_id uuid not null references public.jobs(id) on delete cascade,
   name text not null,
   email text,
+  phone text,
   linkedin_url text,
   cv_text text,
+  -- Human-entered notes - distinct from ai_summary (AI-generated, added in
+  -- a later step). Never conflate the two.
+  notes text,
   stage text not null default 'new'
     check (stage in ('new', 'screening', 'interview', 'offer', 'hired', 'rejected')),
   ai_score int,

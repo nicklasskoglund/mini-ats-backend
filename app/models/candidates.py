@@ -23,8 +23,12 @@ class CandidateCreate(BaseModel):
     job_id: UUID
     name: str = Field(min_length=1)
     email: EmailStr | None = None
+    phone: str | None = None
     linkedin_url: str | None = None
     cv_text: str | None = None
+    # Human-entered notes - distinct from ai_summary (AI-generated, added
+    # in a later step). Never conflate the two.
+    notes: str | None = None
 
 
 class CandidateUpdate(BaseModel):
@@ -33,8 +37,10 @@ class CandidateUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1)
     email: EmailStr | None = None
+    phone: str | None = None
     linkedin_url: str | None = None
     cv_text: str | None = None
+    notes: str | None = None
     stage: Stage | None = None
 
 
@@ -45,8 +51,10 @@ class CandidateRead(BaseModel):
     job_id: UUID
     name: str
     email: str | None
+    phone: str | None
     linkedin_url: str | None
     cv_text: str | None
+    notes: str | None
     stage: Stage
     ai_score: int | None
     ai_summary: str | None
