@@ -126,6 +126,10 @@ class _FakeQuery:
         self._op = ("update", payload)
         return self
 
+    def delete(self):
+        self._op = ("delete", None)
+        return self
+
     def eq(self, field, value):
         self._filters.append(("eq", field, value))
         return self
@@ -208,6 +212,12 @@ class _FakeQuery:
                 row.update(payload)
             return _FakeResponse([dict(r) for r in matched])
 
+        if kind == "delete":
+            matched = [r for r in self.rows if self._matches(r)]
+            for row in matched:
+                self.rows.remove(row)
+            return _FakeResponse([dict(r) for r in matched])
+
         raise AssertionError(f"FakeSupabase: unsupported operation {kind!r}")
 
 
@@ -239,9 +249,8 @@ def _new_profile_row(user_id: str, role: str, metadata: dict | None = None) -> d
 
 
 class _FakeAuthAdmin:
-    """Stand-in for supabase.auth.admin - the three methods
-    app/routers/admin.py calls: create_user, invite_user_by_email, and
-    list_users."""
+    """Stand-in for supabase.auth.admin - the methods app/routers/admin.py
+    calls: create_user, invite_user_by_email, list_users, and delete_user."""
 
     def __init__(self, db: "FakeSupabase"):
         self.db = db
@@ -276,6 +285,22 @@ class _FakeAuthAdmin:
         return [
             SimpleNamespace(id=user_id, email=email)
             for user_id, email in self.users.items()
+        ]
+
+    def delete_user(self, user_id: str) -> None:
+        """Mirrors the real Admin API: removing the auth user also removes
+        the profiles row (ON DELETE CASCADE, verified against the real
+        local database - see app/routers/admin.py). Raises the same
+        AuthApiError shape GoTrue returns for an id it doesn't recognize
+        (verified locally too) - this happens for a genuinely unknown id,
+        but also notably for a row inserted straight into auth.users via
+        SQL rather than through the Admin API, since GoTrue doesn't
+        consider that a real user."""
+        if user_id not in self.users:
+            raise AuthApiError("User not found", 404, "user_not_found")
+        del self.users[user_id]
+        self.db.tables["profiles"] = [
+            p for p in self.db.tables["profiles"] if p["id"] != user_id
         ]
 
 
