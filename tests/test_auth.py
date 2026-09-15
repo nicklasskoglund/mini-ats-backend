@@ -81,6 +81,36 @@ def test_me_rejects_token_missing_sub(make_token, mock_jwks):
     assert response.status_code == 401
 
 
+def test_me_is_unaffected_by_acting_as_customer_header(make_token, mock_jwks):
+    """/me is a pure identity check - it doesn't even declare
+    X-Acting-As-Customer as a parameter (see app/routers/me.py), so the
+    header must have zero effect on it: not used, not validated, not
+    looked up against profiles. Same response with no header, a
+    well-formed header, and a nonsense one."""
+    token = make_token(_valid_claims())
+    expected = {"user_id": VALID_USER_ID, "email": "person@example.com"}
+
+    no_header = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    with_valid_looking_header = client.get(
+        "/me",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Acting-As-Customer": "00000000-0000-0000-0000-0000000000c1",
+        },
+    )
+    with_garbage_header = client.get(
+        "/me",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Acting-As-Customer": "not-a-real-id-at-all",
+        },
+    )
+
+    for response in (no_header, with_valid_looking_header, with_garbage_header):
+        assert response.status_code == 200
+        assert response.json() == expected
+
+
 def test_me_rejects_wrong_signature(mock_jwks):
     """A token signed with a key other than the one the JWKS client trusts
     (e.g. forged, or signed for a different project) must be rejected."""
