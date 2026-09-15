@@ -9,9 +9,9 @@ verification runs for real, against tokens we sign ourselves.
 
 import time
 
+import jwt as pyjwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
-import jwt as pyjwt
 
 from app.main import app
 

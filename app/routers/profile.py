@@ -13,11 +13,11 @@ different question than this endpoint.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from supabase import Client
 
 from app.auth.effective_customer import get_effective_customer_id
 from app.db.client import get_supabase
 from app.models.profile import ProfileRead, ProfileUpdate
+from supabase import Client
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 

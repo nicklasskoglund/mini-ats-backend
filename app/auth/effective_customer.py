@@ -25,10 +25,10 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from postgrest.exceptions import APIError
-from supabase import Client
 
 from app.auth.profile import CurrentProfile, get_current_profile
 from app.db.client import get_supabase
+from supabase import Client
 
 
 def log_acting_as(admin_id: str, acting_as_customer_id: str, endpoint: str) -> None:

@@ -8,22 +8,23 @@ app/auth/effective_customer.py for how that acting-as flow actually works
 once a customer id is chosen).
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from supabase import Client
 from supabase_auth.errors import AuthApiError
 
 from app.auth.profile import CurrentProfile, require_admin
 from app.db.client import get_supabase
 from app.models.admin import AdminAccountCreate, AdminAccountRead, CustomerSummary
+from supabase import Client
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @contextmanager
-def _translate_auth_api_errors():
+def _translate_auth_api_errors() -> Iterator[None]:
     """Wrap a Supabase Auth Admin API call; translate its errors into
     controlled client-facing responses instead of letting an AuthApiError
     bubble up as an unhandled 500 - confirmed in production for two
