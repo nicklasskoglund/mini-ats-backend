@@ -1,39 +1,74 @@
 # mini-ats-backend
 
-Backend for a minimal ATS (applicant tracking system), built with FastAPI.
-See `kickoff-prompt.md` for the full spec.
+Backend API for a lightweight applicant tracking system (ATS): customers post jobs,
+track candidates through a kanban-style pipeline, and get AI-assisted help screening
+CVs against a job description. Admins manage accounts and can act on behalf of a
+specific customer (e.g. for support or onboarding) without impersonation.
 
-## Status
+## Tech stack
 
-- Done: health check endpoint (deployed); JWT verification against
-  Supabase's JWKS endpoint, exposed via a protected `GET /me`; profiles,
-  jobs and candidates table schemas with RLS, migrated to production;
-  CRUD endpoints for jobs and candidates with role/ownership-based
-  authorization; `name` filter on `GET /candidates` and a kanban board
-  endpoint (`GET /candidates/kanban`) grouping candidates by stage; admin
-  account creation (`POST /admin/accounts`, no self-signup - admins get a
-  password set directly, customers set their own via an invite email) and
-  "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
-  header) with audit logging; extended profile fields (`GET`/`PATCH /profile`)
-  and candidate `phone`/`notes` fields; AI CV assessment
-  (`POST /candidates/{id}/assess`); `DELETE` endpoints for jobs, candidates,
-  and admin/customer accounts
-- Next up: Postman collection covering every endpoint, `/openapi.json` export
+- **API:** FastAPI (Python 3.12), Pydantic v2, type hints throughout
+- **Database & auth:** Supabase (Postgres + Auth) - schema managed declaratively via
+  the Supabase CLI
+- **AI:** Anthropic Claude, for CV-to-job-description scoring
+- **Deployment:** Railway
 
-## Requirements
+## Architecture
 
-- Python 3.12
-- A virtual environment in `.venv` (already set up in this repo)
+- The frontend authenticates directly against Supabase Auth and sends the resulting
+  JWT as `Authorization: Bearer <token>` on every request.
+- This service verifies that JWT against Supabase's JWKS endpoint on every protected
+  request - it never trusts a role or user id merely because a client claims it.
+- Authorization is role-based (`admin` / `customer`), looked up from a `profiles`
+  table populated automatically when an account is created. Customers only ever
+  see/edit their own jobs and candidates; admins can see everything, or scope a
+  request to one specific customer via an `X-Acting-As-Customer` header. Every use
+  of that header is logged.
+- Row Level Security is enabled on every table as a defense-in-depth layer, but the
+  actual authorization decisions are made and tested in the API layer, not left to
+  the database alone.
+- There is no self-service sign-up: accounts are created by an admin.
 
 ## Local setup
 
+Requirements: Python 3.12, the [Supabase CLI](https://supabase.com/docs/guides/cli),
+and Docker (for running Supabase locally).
+
 ```bash
-source .venv/scripts/activate   # Windows Git Bash
+python -m venv .venv
+source .venv/scripts/activate   # Windows Git Bash; use .venv/bin/activate on macOS/Linux
 pip install -r requirements-dev.txt
 ```
 
-`requirements-dev.txt` includes `requirements.txt` plus test tooling
-(pytest). Use `requirements.txt` alone for a production install.
+`requirements-dev.txt` includes `requirements.txt` plus test tooling (pytest, ruff).
+Use `requirements.txt` alone for a production install.
+
+Copy `.env.example` to `.env` and fill in real values (never commit `.env` - it's
+gitignored):
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `APP_NAME` | no | Display name for the app |
+| `ENVIRONMENT` | no | `development` / `production` |
+| `SUPABASE_URL` | **yes** | Base URL of the Supabase project |
+| `SUPABASE_JWKS_URL` | **yes** | JWKS endpoint used to verify JWTs; the app fails to start without it |
+| `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every database read/write and for admin account management via Supabase's Admin API. Never logged or returned in a response. |
+| `ANTHROPIC_API_KEY` | **yes** | Used for AI-assisted CV assessment. Never logged or returned in a response. |
+
+### Database
+
+Schema lives declaratively in `supabase/schemas/*.sql`; migrations are generated
+from it, not written by hand. To work with the database locally:
+
+```bash
+supabase link                              # connect the CLI to your Supabase project
+supabase start                             # run Postgres + Auth locally in Docker
+supabase db schema declarative sync --name <change_name> --no-apply   # generate a migration from a schema change
+supabase migration up                      # apply pending migrations locally
+```
+
+Migrations are applied to production automatically by Supabase's GitHub integration
+on merge to `main`.
 
 ## Running locally
 
@@ -42,79 +77,36 @@ uvicorn app.main:app --reload
 ```
 
 - Health check: http://127.0.0.1:8000/health
-- Authenticated identity check: http://127.0.0.1:8000/me (needs a
-  `Authorization: Bearer <supabase-jwt>` header)
-- Jobs / candidates CRUD: http://127.0.0.1:8000/jobs, http://127.0.0.1:8000/candidates
-  (same bearer header; customers see/edit only their own, admins see everything -
-  full request/response shapes are in `/docs`). `DELETE` uses the same ownership
-  rules; `DELETE /jobs/{id}` returns `409` if the job still has candidates
-  attached - remove those first, hard deletion never silently sweeps away
-  candidate data
-- Kanban board: http://127.0.0.1:8000/candidates/kanban - same ownership rules
-  as `GET /candidates`, plus optional `job_id` and `name` (case-insensitive
-  partial match) query filters; response is candidates grouped by stage
-- Admin accounts: http://127.0.0.1:8000/admin/accounts (`POST`, admin-only) - the
-  password flow differs by role: `role=admin` requires a `password` in the body
-  and the account is active immediately (no email sent); `role=customer` must
-  *omit* `password` (`400` if present) and is created via an invite email instead
-  - the customer sets their own password by following its link. There is no
-  self-signup anywhere in the API
-- Customer list: http://127.0.0.1:8000/admin/customers (`GET`, admin-only) -
-  fuels a future frontend's "act as a customer" picker
-- Delete an account: `DELETE /admin/accounts/{id}` (admin-only, `404` if
-  unknown) - always admin-only, no customer self-service deletion. For a
-  customer account, explicitly deletes their candidates, then their jobs,
-  then the auth user itself; for an admin account, just the auth user.
-  Removing the auth user (not just the `profiles` row) also frees up their
-  email address for reuse
-- Profile: http://127.0.0.1:8000/profile (`GET`/`PATCH`) - the effective
-  customer's own profile (`website_url`, `linkedin_url`, `phone`,
-  `contact_email`, `address`, `description`, plus `full_name`/`company_name`
-  which are now editable here too). Scoped by the same effective-customer
-  rules as jobs/candidates: a customer gets their own row, an admin gets
-  `400` without `X-Acting-As-Customer` and the chosen customer's row with
-  it. `GET /me` is unaffected - it stays a plain identity check
-- AI CV assessment: `POST /candidates/{id}/assess` scores how well a
-  candidate's `cv_text` matches their job's `description` (Anthropic
-  Claude), saving `ai_score`, `ai_summary`, `ai_strengths`, `ai_gaps`
-  together on success - never partially. `422` if the candidate has no
-  `cv_text`; `502` (generic message, no provider detail) if the AI call
-  times out, is rate-limited, or returns something unusable. Same
-  ownership rules as the rest of `/candidates`
-- Acting as a customer: any admin request to `/jobs` or `/candidates` accepts
-  an `X-Acting-As-Customer: <customer-id>` header to scope the request to that
-  customer instead of seeing everything; an unknown id or a non-customer id
-  returns `404`. Every time the header actually resolves, a structured JSON
-  audit line is written to stdout (`admin_id`, `acting_as_customer_id`,
-  `endpoint`, `timestamp`)
 - Interactive API docs (Swagger UI): http://127.0.0.1:8000/docs
 - OpenAPI schema: http://127.0.0.1:8000/openapi.json
+
+The endpoints, request/response shapes, and auth requirements are all defined in the
+OpenAPI schema above - that's the authoritative reference. At a glance, the API
+covers:
+
+- **Jobs & candidates** - CRUD, ownership-scoped, plus a kanban view of candidates
+  grouped by stage with name/job filters
+- **CV assessment** - scores a candidate's CV against their job's description and
+  saves a score, a summary, and structured strengths/gaps
+- **Accounts** - admin-only creation, listing, and deletion, including acting on
+  behalf of a specific customer
+- **Profile** - read/update the effective customer's own profile
 
 ## Deploying
 
 Set the start command explicitly on the deploy platform:
-`uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Auto-detection doesn't
-find it, since the entrypoint lives in `app/main.py`, not the repo root.
-
-## Environment variables
-
-Copy `.env.example` to `.env` and fill in real values. `.env` is
-gitignored and must never be committed.
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `APP_NAME` | no | Display name for the app |
-| `ENVIRONMENT` | no | `development` / `production` |
-| `SUPABASE_URL` | **yes** | Base URL of the Supabase project |
-| `SUPABASE_JWKS_URL` | **yes** | JWKS endpoint used to verify JWTs; the app fails to start without it |
-| `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every jobs/candidates database read and write (bypasses RLS, since FastAPI - not Postgres - enforces ownership) and for admin account creation via Supabase's Admin API. Never logged or returned in a response. |
-| `ANTHROPIC_API_KEY` | **yes** | Used by `POST /candidates/{id}/assess` to call Claude for CV assessments. Never logged or returned in a response. |
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT` (auto-detection doesn't find it,
+since the entrypoint lives in `app/main.py`, not the repo root). Set all required
+environment variables above on the platform before deploying.
 
 ## Tests
 
 ```bash
 python -m pytest -v
 ```
+
+Tests run against a fake in-memory Supabase/Auth client - no real database or
+external API calls are made.
 
 ## Project structure
 
@@ -131,18 +123,18 @@ app/
 │   ├── client.py    # get_supabase: cached client, service-role key
 │   └── errors.py    # translates Postgres constraint violations to 422
 ├── services/
-│   └── ai_assessment.py # get_anthropic_client / assess_candidate - CV scoring
+│   └── ai_assessment.py # Anthropic client + CV scoring
 ├── models/
 │   ├── jobs.py       # JobCreate / JobUpdate / JobRead
 │   ├── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
 │   ├── admin.py      # AdminAccountCreate / AdminAccountRead / CustomerSummary
 │   └── profile.py    # ProfileRead / ProfileUpdate
 └── routers/
-    ├── me.py          # GET /me - protected identity check
-    ├── jobs.py        # jobs CRUD, scoped by get_effective_customer_id
-    ├── candidates.py  # candidates CRUD + POST /{id}/assess, ownership via parent job
-    ├── admin.py       # admin-only: account creation, customer list
-    └── profile.py     # GET/PATCH /profile, scoped by get_effective_customer_id
+    ├── me.py          # GET /me - identity check
+    ├── jobs.py        # jobs CRUD
+    ├── candidates.py  # candidates CRUD + AI assessment
+    ├── admin.py       # account management
+    └── profile.py     # profile read/update
 tests/
 supabase/         # Supabase CLI project (schemas, migrations, config)
 ```
