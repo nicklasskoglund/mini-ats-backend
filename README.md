@@ -15,8 +15,9 @@ See `kickoff-prompt.md` for the full spec.
   password set directly, customers set their own via an invite email) and
   "act as a customer" (`GET /admin/customers`, `X-Acting-As-Customer`
   header) with audit logging; extended profile fields (`GET`/`PATCH /profile`)
-  and candidate `phone`/`notes` fields
-- Next up: AI CV assessment
+  and candidate `phone`/`notes` fields; AI CV assessment
+  (`POST /candidates/{id}/assess`)
+- Next up: Postman collection covering every endpoint, `/openapi.json` export
 
 ## Requirements
 
@@ -63,6 +64,13 @@ uvicorn app.main:app --reload
   rules as jobs/candidates: a customer gets their own row, an admin gets
   `400` without `X-Acting-As-Customer` and the chosen customer's row with
   it. `GET /me` is unaffected - it stays a plain identity check
+- AI CV assessment: `POST /candidates/{id}/assess` scores how well a
+  candidate's `cv_text` matches their job's `description` (Anthropic
+  Claude), saving `ai_score`, `ai_summary`, `ai_strengths`, `ai_gaps`
+  together on success - never partially. `422` if the candidate has no
+  `cv_text`; `502` (generic message, no provider detail) if the AI call
+  times out, is rate-limited, or returns something unusable. Same
+  ownership rules as the rest of `/candidates`
 - Acting as a customer: any admin request to `/jobs` or `/candidates` accepts
   an `X-Acting-As-Customer: <customer-id>` header to scope the request to that
   customer instead of seeing everything; an unknown id or a non-customer id
@@ -90,6 +98,7 @@ gitignored and must never be committed.
 | `SUPABASE_URL` | **yes** | Base URL of the Supabase project |
 | `SUPABASE_JWKS_URL` | **yes** | JWKS endpoint used to verify JWTs; the app fails to start without it |
 | `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every jobs/candidates database read and write (bypasses RLS, since FastAPI - not Postgres - enforces ownership) and for admin account creation via Supabase's Admin API. Never logged or returned in a response. |
+| `ANTHROPIC_API_KEY` | **yes** | Used by `POST /candidates/{id}/assess` to call Claude for CV assessments. Never logged or returned in a response. |
 
 ## Tests
 
@@ -111,6 +120,8 @@ app/
 ├── db/
 │   ├── client.py    # get_supabase: cached client, service-role key
 │   └── errors.py    # translates Postgres constraint violations to 422
+├── services/
+│   └── ai_assessment.py # get_anthropic_client / assess_candidate - CV scoring
 ├── models/
 │   ├── jobs.py       # JobCreate / JobUpdate / JobRead
 │   ├── candidates.py # CandidateCreate / CandidateUpdate / CandidateRead / KanbanBoard
@@ -119,7 +130,7 @@ app/
 └── routers/
     ├── me.py          # GET /me - protected identity check
     ├── jobs.py        # jobs CRUD, scoped by get_effective_customer_id
-    ├── candidates.py  # candidates CRUD, ownership via parent job
+    ├── candidates.py  # candidates CRUD + POST /{id}/assess, ownership via parent job
     ├── admin.py       # admin-only: account creation, customer list
     └── profile.py     # GET/PATCH /profile, scoped by get_effective_customer_id
 tests/
