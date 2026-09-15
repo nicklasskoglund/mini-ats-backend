@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     used for every database read/write (bypasses RLS, since FastAPI - not
     Postgres - enforces ownership/authorization), so the app is unusable
     without it and should fail at startup rather than at the first request.
+
+    ANTHROPIC_API_KEY has no default for the same reason: it's required to
+    run a CV assessment, so the app should fail at startup rather than at
+    the first POST /candidates/{id}/assess call.
     """
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -41,6 +45,8 @@ class Settings(BaseSettings):
     # Supabase's asymmetric JWT signing keys use ES256; RS256 is accepted
     # too since Supabase also supports RSA key pairs for this feature.
     supabase_jwt_algorithms: list[str] = ["ES256", "RS256"]
+
+    anthropic_api_key: str
 
 
 settings = Settings()

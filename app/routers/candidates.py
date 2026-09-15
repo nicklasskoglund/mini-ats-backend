@@ -11,6 +11,7 @@ caller's raw role - see app/auth/effective_customer.py.
 
 from uuid import UUID
 
+import anthropic
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
@@ -25,6 +26,11 @@ from app.models.candidates import (
     STAGES,
 )
 from app.routers.jobs import check_job_ownership, get_job_or_404
+from app.services.ai_assessment import (
+    AssessmentFailed,
+    assess_candidate,
+    get_anthropic_client,
+)
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -210,4 +216,58 @@ def update_candidate(
             .eq("id", str(candidate_id))
             .execute()
         )
+    return response.data[0]
+
+
+@router.post("/{candidate_id}/assess", response_model=CandidateRead)
+def assess_candidate_endpoint(
+    candidate_id: UUID,
+    effective_customer_id: str | None = Depends(get_effective_customer_id),
+    supabase: Client = Depends(get_supabase),
+    ai_client: anthropic.Anthropic = Depends(get_anthropic_client),
+) -> dict:
+    """Run an AI assessment of the candidate's CV against their job's
+    description (see app/services/ai_assessment.py), saving ai_score,
+    ai_summary, ai_strengths, and ai_gaps together on success - never
+    partially, so a failed or malformed AI response can't leave the
+    candidate with some fields updated and others stale.
+
+    Same ownership rule as reading/updating a candidate. A 502 (not 500)
+    on any AI failure - timeout, rate limit, or an unusable response -
+    with a generic message; no Anthropic-specific detail reaches the
+    client (see AssessmentFailed's docstring).
+    """
+    candidate = _get_candidate_or_404(supabase, candidate_id)
+    _check_candidate_ownership(supabase, candidate, effective_customer_id)
+
+    if not candidate.get("cv_text"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="cv_text is required to run an assessment",
+        )
+
+    job = get_job_or_404(supabase, UUID(candidate["job_id"]))
+
+    try:
+        result = assess_candidate(
+            ai_client, job.get("description") or "", candidate["cv_text"]
+        )
+    except AssessmentFailed as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI assessment is temporarily unavailable, try again shortly",
+        ) from exc
+
+    updates = {
+        "ai_score": result.score,
+        "ai_summary": result.summary,
+        "ai_strengths": result.strengths,
+        "ai_gaps": result.gaps,
+    }
+    response = (
+        supabase.table("candidates")
+        .update(updates)
+        .eq("id", str(candidate_id))
+        .execute()
+    )
     return response.data[0]
