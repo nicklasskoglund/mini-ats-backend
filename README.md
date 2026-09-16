@@ -54,6 +54,7 @@ gitignored):
 | `SUPABASE_JWKS_URL` | **yes** | JWKS endpoint used to verify JWTs; the app fails to start without it |
 | `SUPABASE_SECRET_KEY` | **yes** | Service-role key; used for every database read/write and for admin account management via Supabase's Admin API. Never logged or returned in a response. |
 | `ANTHROPIC_API_KEY` | **yes** | Used for AI-assisted CV assessment. Never logged or returned in a response. |
+| `CORS_ALLOWED_ORIGINS` | no | Comma-separated list of browser origins allowed to call this API. Defaults to Vite's local dev server; set to the real frontend origin(s) on every other deployment. |
 
 ### Database
 
