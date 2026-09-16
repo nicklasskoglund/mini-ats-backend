@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY has no default for the same reason: it's required to
     run a CV assessment, so the app should fail at startup rather than at
     the first POST /candidates/{id}/assess call.
+
+    CORS_ALLOWED_ORIGINS does get a default (Vite's local dev port) since,
+    unlike the settings above, missing it doesn't make the app unusable -
+    it just means no browser origin beyond localhost can call the API
+    until the real frontend origin is configured.
     """
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -47,6 +52,12 @@ class Settings(BaseSettings):
     supabase_jwt_algorithms: list[str] = ["ES256", "RS256"]
 
     anthropic_api_key: str
+
+    # Comma-separated list of allowed browser origins for CORS - see
+    # app/main.py. Default covers Vite's local dev server only; the real
+    # frontend origin(s) (and, if needed, Vercel preview deployments) must
+    # be set here via the environment on every other deployment.
+    cors_allowed_origins: str = "http://localhost:5173"
 
 
 settings = Settings()
