@@ -255,24 +255,43 @@ class _FakeAuthAdmin:
     def __init__(self, db: "FakeSupabase"):
         self.db = db
         self.users: dict[str, str] = {}  # id -> email
+        self.confirmed: set[str] = set()  # ids considered email-confirmed
         # Settable by tests to simulate any AuthApiError (invalid email,
         # rate limit, ...) from the next create_user/invite_user_by_email
         # call - consumed (reset to None) once raised, so it only affects
         # a single call.
         self.next_error: AuthApiError | None = None
 
-    def _register(self, email: str, metadata: dict):
+    def _register(self, email: str, metadata: dict, *, confirmed: bool):
         if self.next_error is not None:
             error, self.next_error = self.next_error, None
             raise error
-        if email in self.users.values():
-            raise AuthApiError(
-                "A user with this email address has already been registered",
-                422,
-                "email_exists",
-            )
+
+        existing_id = next(
+            (uid for uid, e in self.users.items() if e == email), None
+        )
+        if existing_id is not None:
+            if existing_id in self.confirmed:
+                raise AuthApiError(
+                    "A user with this email address has already been registered",
+                    422,
+                    "email_exists",
+                )
+            # Mirrors the real bug this fake used to miss entirely: a
+            # duplicate against an unconfirmed pending invite does NOT
+            # raise - Supabase just resends the invite for the *existing*
+            # account (same id, no new profiles row). Relying on this
+            # exception alone (rather than an explicit pre-check) is
+            # exactly what let POST /admin/accounts return 201 for a
+            # duplicate address with nothing new actually created.
+            if confirmed:
+                self.confirmed.add(existing_id)
+            return SimpleNamespace(user=SimpleNamespace(id=existing_id, email=email))
+
         user_id = str(uuid.uuid4())
         self.users[user_id] = email
+        if confirmed:
+            self.confirmed.add(user_id)
         # Mirrors the real handle_new_user trigger: the profiles row is a
         # side effect of the user being created or invited, not a separate
         # step - and not gated on email confirmation either (verified
@@ -284,12 +303,25 @@ class _FakeAuthAdmin:
         return SimpleNamespace(user=SimpleNamespace(id=user_id, email=email))
 
     def create_user(self, attributes: dict):
-        return self._register(attributes["email"], attributes.get("user_metadata", {}))
+        # Every real call this router makes passes email_confirm=True.
+        return self._register(
+            attributes["email"],
+            attributes.get("user_metadata", {}),
+            confirmed=attributes.get("email_confirm", False),
+        )
 
     def invite_user_by_email(self, email: str, options: dict | None = None):
-        return self._register(email, (options or {}).get("data", {}))
+        # A fresh invite is never confirmed until the invitee clicks the
+        # link - which never happens in these tests.
+        return self._register(
+            email, (options or {}).get("data", {}), confirmed=False
+        )
 
-    def list_users(self):
+    def list_users(self, page: int | None = None, per_page: int | None = None):
+        # No real pagination needed for tests (small fixed dataset per
+        # test) - accepting the kwargs is enough for
+        # _email_already_registered's page-until-short-page loop to
+        # terminate correctly after the first call.
         return [
             SimpleNamespace(id=user_id, email=email)
             for user_id, email in self.users.items()

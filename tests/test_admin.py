@@ -159,6 +159,34 @@ def test_duplicate_customer_email_returns_409(act_as):
     assert second.status_code == 409
 
 
+def test_duplicate_unconfirmed_customer_invite_returns_409_not_201(act_as):
+    """Regression test for a real production bug: invite_user_by_email()
+    does NOT raise for an email that's already invited but unconfirmed -
+    Supabase just resends the invite for the existing account (same id, no
+    new profiles row) instead of erroring. Relying on AuthApiError alone
+    (the pre-fix behavior) let this return 201 for a duplicate address
+    with no second account ever actually created. The explicit
+    _email_already_registered check must catch it regardless."""
+    act_as(id=ADMIN_ID, role="admin")
+    payload = {
+        "email": "unconfirmed-dup@example.com",
+        "role": "customer",
+        "company_name": "Acme Inc",
+    }
+
+    first = client.post("/admin/accounts", json=payload)
+    assert first.status_code == 201
+
+    # Second invite hits the still-unconfirmed account from the first one -
+    # exactly the case a bare AuthApiError catch used to miss.
+    second = client.post("/admin/accounts", json=payload)
+    assert second.status_code == 409
+
+    customers = client.get("/admin/customers").json()
+    matching = [c for c in customers if c["email"] == payload["email"]]
+    assert len(matching) == 1
+
+
 def test_invalid_email_from_supabase_returns_502(act_as, fake_db):
     """Regression test: a non-email_exists AuthApiError (confirmed in
     production for an invalid email domain, and separately for Supabase's
