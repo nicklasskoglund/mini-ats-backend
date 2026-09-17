@@ -32,11 +32,13 @@ def _translate_auth_api_errors() -> Iterator[None]:
     rate limit), neither of which was previously caught.
 
     - code == "email_exists": 409, an account with this email already
-      exists. Verified locally against both calls this router makes:
+      exists. This is only a backup path now (see
+      _email_already_registered, checked before either Admin API call is
+      made) - kept as defense-in-depth in case of a race between that
+      check and the actual create/invite call. Verified locally that
       create_user() and invite_user_by_email() each raise this identically
       (status 422 from Supabase itself) for an email that belongs to an
-      existing, confirmed user. Re-inviting an unconfirmed/pending invite
-      does NOT error (Supabase just resends it), which is fine as-is.
+      existing, confirmed user.
     - anything else: 502, with Supabase's own message included in the
       detail. Same status code POST /candidates/{id}/assess uses for any
       Anthropic-side failure (external service rejected the request, not
@@ -58,6 +60,40 @@ def _translate_auth_api_errors() -> Iterator[None]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Account creation failed: {exc.message}",
         ) from exc
+
+
+def _email_already_registered(supabase: Client, email: str) -> bool:
+    """Check whether `email` already belongs to any auth user - confirmed
+    or not.
+
+    This exists because invite_user_by_email() does NOT raise an error for
+    an email that's already invited but unconfirmed: verified locally that
+    Supabase silently resends the invite for the *existing* account
+    instead of creating a new one (same user id, no new profiles row) -
+    so _translate_auth_api_errors's AuthApiError catch has nothing to
+    catch, and POST /admin/accounts used to return 201 for a duplicate
+    address with no new account ever actually created. Checking here,
+    before either Admin API call, means a duplicate is always rejected
+    the same way regardless of which call (create_user vs
+    invite_user_by_email) would have been used, and regardless of whether
+    the existing account is confirmed.
+
+    list_users() is paginated by Supabase's Admin API (same caveat as
+    list_customers), so this pages through all of it rather than just the
+    first page - a duplicate check that silently misses users past page
+    one would just reintroduce the same class of bug.
+    """
+    page = 1
+    per_page = 200
+    while True:
+        users = supabase.auth.admin.list_users(page=page, per_page=per_page)
+        if not users:
+            return False
+        if any(user.email and user.email.lower() == email.lower() for user in users):
+            return True
+        if len(users) < per_page:
+            return False
+        page += 1
 
 
 @router.post(
@@ -87,6 +123,11 @@ def create_account(
     the customer confirms it - so "act as a customer" (see
     app/auth/effective_customer.py) already works for a newly invited,
     still-unconfirmed customer.
+
+    A duplicate email is always rejected with 409 up front (see
+    _email_already_registered) before either Admin API call is attempted -
+    regardless of whether the existing account is a fresh invite, an
+    unconfirmed pending invite, or a fully confirmed account.
     """
     if account_in.role == "customer":
         if not account_in.company_name:
@@ -102,7 +143,19 @@ def create_account(
                     "the customer sets their own via the invite email"
                 ),
             )
+    elif account_in.password is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="password is required when role is 'admin'",
+        )
 
+    if _email_already_registered(supabase, account_in.email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+
+    if account_in.role == "customer":
         with _translate_auth_api_errors():
             result = supabase.auth.admin.invite_user_by_email(
                 account_in.email,
@@ -115,12 +168,6 @@ def create_account(
                 },
             )
     else:
-        if account_in.password is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="password is required when role is 'admin'",
-            )
-
         with _translate_auth_api_errors():
             result = supabase.auth.admin.create_user(
                 {
